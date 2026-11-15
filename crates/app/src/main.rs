@@ -375,6 +375,130 @@ fn progress_json(job: &PreviewJob) -> String {
     ]))
 }
 
+/// The folder index behind the Search page: built on the first search and kept while the
+/// window is open, rebuilt when the folders change, on request or after [`INDEX_MAX_AGE`].
+#[derive(Default)]
+struct SearchState {
+    job: PreviewJob,
+    index: Mutex<Option<(i64, org_engine::search::FileIndex)>>,
+}
+
+/// How long a folder index is reused before searching lists the folders again.
+const INDEX_MAX_AGE: i64 = 300;
+/// How many results are sent to the window.
+const SEARCH_SHOWN: usize = 500;
+
+/// The folder list in a request: `[{"path": "...", "recursive": true}]`.
+fn folders_from(v: Option<&Value>) -> Vec<org_core::WatchedFolder> {
+    match v {
+        Some(Value::Arr(a)) => a
+            .iter()
+            .filter_map(|f| match f {
+                Value::Obj(fo) => {
+                    let path = fo.iter().find_map(|(k, v)| match (k.as_str(), v) { ("path", Value::Str(p)) => Some(p.clone()), _ => None })?;
+                    let recursive = !fo.iter().any(|(k, v)| k == "recursive" && matches!(v, Value::Bool(false)));
+                    (!path.trim().is_empty()).then(|| org_core::WatchedFolder { path: PathBuf::from(path), recursive })
+                }
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Searches the folders by name, extension, size and date. Request:
+/// `{"folders": [...], "text": "", "extensions": "", "min_size": n, "max_size": n,
+/// "after": ts, "before": ts, "sort": "name|folder|size|modified", "desc": bool, "refresh": bool}`.
+#[tauri::command]
+async fn search_files(text: String, st: State<'_, SearchState>) -> Result<String, String> {
+    use org_engine::search::{FileIndex, Query, SortBy};
+    let v = json::parse(&text).map_err(|e| format!("{e:?}"))?;
+    let Value::Obj(o) = &v else { return Err("bad request".into()) };
+    let get = |k: &str| o.iter().find(|(x, _)| x == k).map(|(_, y)| y);
+    let text_of = |k: &str| match get(k) { Some(Value::Str(x)) => x.clone(), _ => String::new() };
+    let num = |k: &str| match get(k) { Some(Value::Int(n)) => Some(*n), _ => None };
+    let flag = |k: &str| matches!(get(k), Some(Value::Bool(true)));
+    let folders = folders_from(get("folders"));
+    if folders.is_empty() {
+        return Err("no_folders".into());
+    }
+    let q = Query {
+        text: text_of("text"),
+        extensions: text_of("extensions"),
+        min_size: num("min_size").map(|n| n.max(0) as u64),
+        max_size: num("max_size").map(|n| n.max(0) as u64),
+        modified_after: num("after"),
+        modified_before: num("before"),
+    };
+    let sort = match text_of("sort").as_str() {
+        "folder" => SortBy::Folder,
+        "size" => SortBy::Size,
+        "modified" => SortBy::Modified,
+        _ => SortBy::Name,
+    };
+
+    let mut guard = st.index.lock().map_err(|e| e.to_string())?;
+    let now = now_ts();
+    let stale = match &*guard {
+        Some((at, idx)) => flag("refresh") || idx.folders != folders || now - at > INDEX_MAX_AGE,
+        None => true,
+    };
+    if stale {
+        let job = &st.job;
+        let my = job.gen.fetch_add(1, Ordering::SeqCst) + 1;
+        job.stop.store(false, Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        job.set(|p| *p = PreviewProgress { gen: my, phase: "list", started: Some(started), ..Default::default() });
+        let built = FileIndex::build(&SysFs, &folders, &mut |pr| {
+            job.set(|p| {
+                p.total = pr.files;
+                p.checked = pr.folders;
+            });
+            !job.stop.load(Ordering::SeqCst)
+        });
+        job.set(|p| p.phase = "done");
+        match built {
+            Some(idx) => *guard = Some((now, idx)),
+            None => return Err("stopped".into()),
+        }
+    }
+    let (at, idx) = guard.as_ref().expect("built");
+    let (hits, total) = idx.search(&q, sort, flag("desc"), SEARCH_SHOWN);
+    Ok(json::to_string_pretty(&obj(vec![
+        ("total", int(total)),
+        ("indexed", int(idx.entries.len())),
+        ("built_at", int(*at)),
+        ("capped", Value::Bool(idx.capped)),
+        ("unavailable", Value::Arr(idx.unavailable.iter().map(|p| s(&p.to_string_lossy())).collect())),
+        (
+            "items",
+            Value::Arr(
+                hits.iter()
+                    .map(|e| {
+                        obj(vec![
+                            ("path", s(&e.path.to_string_lossy())),
+                            ("name", s(e.name())),
+                            ("folder", s(&e.path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())),
+                            ("size", int(e.size)),
+                            ("modified", int(e.modified)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+    ])))
+}
+
+#[tauri::command]
+fn search_progress(st: State<'_, SearchState>) -> String {
+    progress_json(&st.job)
+}
+
+#[tauri::command]
+fn stop_search(st: State<'_, SearchState>) {
+    st.job.stop.store(true, Ordering::SeqCst);
+}
+
 /// Căutarea din pagina Dubluri (aceeași mecanică de progres și oprire ca previzualizarea).
 #[derive(Default)]
 struct DupJob(PreviewJob);
@@ -1274,6 +1398,7 @@ fn main() {
         .manage(DupMemo::default())
         .manage(AppPrints::default())
         .manage(DupJob::default())
+        .manage(SearchState::default())
         // Fereastra pornește ascunsă; pagina o arată după primul desen, deja la poziția salvată.
         // Plasă de siguranță: dacă pagina nu apucă s-o arate, apare după 5 secunde.
         .setup(|app| {
@@ -1286,6 +1411,9 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            search_files,
+            search_progress,
+            stop_search,
             get_rules,
             save_rules,
             preview,

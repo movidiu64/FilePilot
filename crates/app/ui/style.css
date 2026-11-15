@@ -483,3 +483,16 @@ form.modal .lbl > .inp { color: var(--text); font-size: 14px; }
   .tab { padding: 0 10px; }
   .brand { padding-right: 8px; }
 }
+@media (max-width: 1040px) {
+  .tab { padding: 0 7px; }
+  #daemon-chip { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+
+/* Search */
+.search-row { align-items: center; gap: 8px; }
+.search-q { font-size: 15px; padding: 9px 12px; }
+.search-filters { gap: 14px; margin-top: 10px; align-items: center; }
+.ext-inp { width: 130px; }
+.search-meta { padding-top: 10px; padding-bottom: 6px; }
+.srow { grid-template-columns: minmax(180px, 2fr) minmax(160px, 3fr) 90px 165px 36px; }
+#search-results.stale .flist { opacity: .6; }

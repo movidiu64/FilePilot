@@ -2639,6 +2639,132 @@ function renderDupsTab() {
   return h('div', { class: 'page dups-page' }, where, results);
 }
 
+// ---------- Search tab ----------
+const SEARCH_SIZES = [['any', 'sizeAny', null, null], ['small', 'sizeSmall', null, 1 << 20], ['mid', 'sizeMid', 1 << 20, 100 * (1 << 20)],
+  ['big', 'sizeBig', 100 * (1 << 20), null], ['huge', 'sizeHuge', 1 << 30, null]];
+const SEARCH_DATES = [['any', 'dateAny'], ['today', 'dateToday'], ['7', 'date7'], ['30', 'date30'], ['365', 'dateYear'], ['old', 'dateOld']];
+
+function searchState() {
+  if (!S.search) S.search = { text: '', ext: '', size: 'any', date: 'any', sort: { key: 'name', desc: false }, data: null, error: null, loading: false, seq: 0 };
+  return S.search;
+}
+
+/// The folders of all rules (hidden ones only while unlocked: the window never gets them otherwise).
+function searchFolders() {
+  const out = [];
+  for (const r of S.doc.rules) for (const f of r.folders) {
+    if (f.path && !out.some((x) => x.path.toLowerCase() === f.path.toLowerCase() && x.recursive === (f.recursive !== false))) out.push({ path: f.path, recursive: f.recursive !== false });
+  }
+  return out;
+}
+
+function searchRequest(refresh) {
+  const q = searchState();
+  const [, , min, max] = SEARCH_SIZES.find(([k]) => k === q.size) || SEARCH_SIZES[0];
+  const now = Math.floor(Date.now() / 1000);
+  const day0 = new Date(); day0.setHours(0, 0, 0, 0);
+  let after = null, before = null;
+  if (q.date === 'today') after = Math.floor(day0 / 1000);
+  else if (q.date === 'old') before = now - 365 * 86400;
+  else if (q.date !== 'any') after = now - parseInt(q.date, 10) * 86400;
+  return { folders: searchFolders(), text: q.text, extensions: q.ext, min_size: min, max_size: max, after, before,
+    sort: q.sort.key, desc: q.sort.desc, refresh: !!refresh };
+}
+
+let searchTimer = null;
+function scheduleSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(() => runSearch(), 200); }
+
+/// Runs the search; while the folders are being listed, shows how far it got. A newer
+/// search supersedes an older one.
+async function runSearch(refresh = false) {
+  const q = searchState();
+  const req = searchRequest(refresh);
+  if (!req.folders.length) { q.data = null; q.error = 'no_folders'; fillSearchResults(); return; }
+  const my = ++q.seq;
+  q.loading = true; fillSearchResults();
+  const poll = setInterval(async () => {
+    try {
+      const p = JSON.parse(await invoke('search_progress'));
+      const el = document.getElementById('search-progress');
+      if (el && p.phase === 'list') el.textContent = t('searchListing', { n: fmtN(p.total), d: fmtN(p.checked) });
+    } catch (_) { /* the result comes anyway */ }
+  }, 300);
+  try {
+    const data = JSON.parse(await invoke('search_files', { text: JSON.stringify(req) }));
+    if (my !== q.seq) return;
+    q.data = data; q.error = null;
+  } catch (e) {
+    if (my !== q.seq) return;
+    q.error = String(e);
+  } finally {
+    clearInterval(poll);
+    if (my === q.seq) { q.loading = false; fillSearchResults(); }
+  }
+}
+
+function searchMenu(ev, f) {
+  contextMenu(ev, [
+    { label: t('ctxReveal'), run: () => reveal(f.path) },
+    { label: t('ctxCopyPath'), run: async () => { try { await navigator.clipboard.writeText(f.path); toast(t('copied')); } catch (_) { toast(t('copyFailed'), true); } } },
+  ]);
+}
+
+function fillSearchResults() {
+  const box = document.getElementById('search-results');
+  if (!box) return;
+  const q = searchState();
+  const data = q.data;
+  box.classList.toggle('stale', q.loading && !!data);
+  if (q.error) {
+    fill(box, h('p', { class: q.error === 'no_folders' ? 'muted pad' : 'warn pad' },
+      q.error === 'no_folders' ? t('searchNoFolders') : q.error === 'stopped' ? t('searchStopped') : t('previewError', { msg: q.error })));
+    return;
+  }
+  if (!data) { fill(box, h('p', { id: 'search-progress', class: 'muted pad' }, t('searchStarting'))); return; }
+  const rows = data.items.map((f) => h('div', { class: 'frow srow', oncontextmenu: (ev) => searchMenu(ev, f), ondblclick: () => reveal(f.path) },
+    h('span', { class: 'ell', title: f.name }, f.name),
+    h('span', { class: 'ell muted mono small', title: f.folder }, f.folder),
+    h('span', { class: 'muted' }, fmtBytes(f.size)),
+    h('span', { class: 'muted' }, fmtTime(f.modified)),
+    h('span', {}, iconBtn('folder', t('ctxReveal'), () => reveal(f.path)))));
+  fill(box,
+    h('div', { class: 'row between pad-h search-meta' },
+      h('span', { id: 'search-progress', class: 'muted small' },
+        q.loading ? t('searchSearching') : data.total === data.indexed ? t('searchAll', { n: fmtN(data.total) })
+          : t('searchCount', { n: fmtN(data.total), total: fmtN(data.indexed) })),
+      h('span', { class: 'muted small' }, t('searchIndexed', { when: relTime(data.built_at) }))),
+    data.unavailable.length ? h('p', { class: 'warn pad' }, t('homeUnavailable', { list: data.unavailable.join(', ') })) : null,
+    data.capped ? h('p', { class: 'warn pad' }, t('searchCapped', { n: fmtN(data.indexed) })) : null,
+    h('div', { class: 'frow fhead muted srow' },
+      [['name', 'colName'], ['folder', 'colFolder'], ['size', 'colSize'], ['modified', 'colModified']]
+        .map(([k, label]) => sortHeader(label, k, q.sort, (v) => { q.sort = v; runSearch(); })), h('span')),
+    rows.length ? h('div', { class: 'flist' }, rows) : h('p', { class: 'muted pad' }, t('searchNone')),
+    data.total > data.items.length ? h('p', { class: 'muted pad' }, t('searchTop', { n: fmtN(data.items.length) })) : null);
+}
+
+function renderSearchTab() {
+  const q = searchState();
+  const folders = searchFolders();
+  const set = (k) => (v) => { q[k] = v; scheduleSearch(); };
+  const head = h('section', { class: 'card' },
+    h('div', { class: 'cbody' },
+      h('div', { class: 'row search-row' },
+        h('input', { id: 'search-q', class: 'inp grow search-q', type: 'search', value: q.text, placeholder: t('searchPh'), 'aria-label': t('tabSearch'),
+          spellcheck: false, autofocus: true, oninput: (e) => set('text')(e.target.value) }),
+        info(t('tabSearch'), t('searchHelp'))),
+      h('div', { class: 'row wrap search-filters' },
+        h('label', { class: 'row small' }, t('searchExt'),
+          textInput(q.ext, set('ext'), t('searchExt'), { placeholder: 'pdf, docx', class: 'inp ext-inp' })),
+        h('label', { class: 'row small' }, t('searchSize'),
+          select(SEARCH_SIZES.map(([k, l]) => [k, t(l)]), q.size, (v) => { q.size = v; runSearch(); }, t('searchSize'))),
+        h('label', { class: 'row small' }, t('searchDate'),
+          select(SEARCH_DATES.map(([k, l]) => [k, t(l)]), q.date, (v) => { q.date = v; runSearch(); }, t('searchDate'))),
+        h('span', { class: 'grow' }),
+        h('span', { class: 'muted small', title: folders.map((f) => f.path).join('\n') }, t('searchWhere', { n: folders.length })),
+        h('button', { type: 'button', class: 'btn small', title: t('searchRefreshHelp'), onclick: () => runSearch(true) }, t('searchRefresh')))));
+  return h('div', { class: 'page search-page' }, head, h('section', { id: 'search-results', class: 'card' }));
+}
+
 // ---------- fila Variabile ----------
 function renderVarsTab() {
   const names = Object.keys(S.doc.dictionaries);
@@ -3013,6 +3139,7 @@ function setTab(tab) {
   if (tab === 'journal') { loadJournal(); loadPending(); }
   if (tab === 'rules') runPreview();
   if (tab === 'home') { loadHome(); loadPending(); }
+  if (tab === 'search') { runSearch(); const el = document.getElementById('search-q'); if (el) el.focus(); }
 }
 
 let lastView = null;
@@ -3030,9 +3157,9 @@ function render() {
     ? SCROLLERS.map((sel) => { const el = document.querySelector(sel); return [sel, el ? el.scrollTop : 0]; })
     : [];
   lastView = view;
-  const tabs = [['home', 'tabHome'], ['rules', 'tabRules'], ['journal', 'tabJournal'], ['dups', 'tabDups'], ['vars', 'tabVars'], ['settings', 'tabSettings']];
+  const tabs = [['home', 'tabHome'], ['rules', 'tabRules'], ['journal', 'tabJournal'], ['search', 'tabSearch'], ['dups', 'tabDups'], ['vars', 'tabVars'], ['settings', 'tabSettings']];
   const content = S.tab === 'home' ? renderHomeTab() : S.tab === 'rules' ? renderRulesTab() : S.tab === 'journal' ? renderJournalTab()
-    : S.tab === 'dups' ? renderDupsTab() : S.tab === 'vars' ? renderVarsTab() : renderSettingsTab();
+    : S.tab === 'search' ? renderSearchTab() : S.tab === 'dups' ? renderDupsTab() : S.tab === 'vars' ? renderVarsTab() : renderSettingsTab();
   fill(document.getElementById('app'),
     h('header', { class: 'topbar', 'data-tauri-drag-region': true },
       h('div', { class: 'brand', 'data-tauri-drag-region': true }, 'FilePilot'),
@@ -3053,6 +3180,7 @@ function render() {
   if (S.tab === 'journal') { renderJournalBody(); fillPending(); }
   if (S.tab === 'home') { fillHomeStatus(); fillHomeWeek(); fillHomeRecent(); fillHomeChecks(); fillPending(); }
   if (S.tab === 'dups') { fillDupProgress(); fillDupBar(); }
+  if (S.tab === 'search') fillSearchResults();
   for (const [sel, y] of scroll) { const el = document.querySelector(sel); if (el) el.scrollTop = y; }
   refreshIssues();
 }

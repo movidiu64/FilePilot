@@ -8,6 +8,7 @@ FilePilot watches folders and applies *if–then* rules to the files that appear
 - [Actions](#actions)
 - [Archives](#archives)
 - [Variables](#variables)
+- [Search](#search)
 - [Duplicates](#duplicates)
 - [Confirmations](#confirmations)
 - [Simulation](#simulation)
@@ -132,6 +133,16 @@ Variables can be used in destinations, names, arguments and commands. The **{ } 
 Date formats use these tokens (the picker inserts them for you): `AAAA` year, `AA` two-digit year, `LL` month, `LLLL` month name (in the interface language), `ZZ` day, `HH` hour, `MM` minute, `SS` second. Any other character is kept, so `{modified:AAAA-LL-ZZ}` gives `2026-11-15` and `{created:AAAA}\{created:LL}` gives the subfolders `2026\11`. To write a literal brace, double it: `{{` and `}}`.
 
 **Dictionaries** (Variables tab) turn a word found in the name, extension, path or content into a value. For example, extension `pdf, doc, docx` → `Documents`, `jpg, png` → `Images`, otherwise `Other`; then `{var:FileType}` in a destination sorts files into those folders. Entries are checked from top to bottom and the first match wins, so put the most specific first. If nothing matches and there is no default value, the rule does not run for that file. Dictionaries can be imported, exported and edited as JSON.
+
+## Search
+
+The **Search** page finds files in the folders your rules watch, like a small Everything for your own folders:
+
+- **Name**: words in any order (`final report` finds `Report FINAL v2.docx`); a word with `*` or `?` is a pattern for the whole name (`*.pdf`, `invoice-??.docx`). Letter case does not matter.
+- **Extensions** (`pdf, docx`), **size** (under 1 MB … over 1 GB) and **modified** (today, last 7 or 30 days, last year, older than a year).
+- Sort by name, folder, size or date; double-click a file or use its folder button to show it in Explorer; right-click to copy its path.
+
+The first search lists the folders, using only what the folder listing gives (name, size, date), without opening any file; every later search filters that list in memory, in milliseconds even with hundreds of thousands of files. The list is redone automatically after 5 minutes, when the rules' folders change, or with **Refresh**. Folders of hidden rules are searched only while hidden rules are unlocked.
 
 ## Duplicates
 
