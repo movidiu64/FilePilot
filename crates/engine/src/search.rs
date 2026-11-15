@@ -115,6 +115,42 @@ impl FileIndex {
         Some(idx)
     }
 
+    /// Whether `path` lies in one of the indexed folders (directly, or below it when the
+    /// folder is listed with its subfolders).
+    pub fn covers(&self, path: &Path) -> bool {
+        self.folders
+            .iter()
+            .any(|f| if f.recursive { path.starts_with(&f.path) && path != f.path } else { path.parent() == Some(f.path.as_path()) })
+    }
+
+    /// Brings the index up to date for files that changed since it was built (moved,
+    /// renamed, copied, deleted, restored): each path is looked up again and added, updated
+    /// or dropped. Much cheaper than listing the folders again.
+    pub fn update(&mut self, fs: &dyn Fs, touched: &[PathBuf]) {
+        if touched.is_empty() {
+            return;
+        }
+        let set: std::collections::HashSet<&Path> = touched.iter().map(PathBuf::as_path).collect();
+        self.entries.retain(|e| !set.contains(e.path.as_path()));
+        for p in set {
+            if !self.covers(p) || crate::is_temp_download(p) || self.entries.len() >= MAX_INDEXED {
+                continue;
+            }
+            let Ok(st) = fs.metadata(p) else { continue };
+            if fs.list_dir(p).is_ok() {
+                continue; // a folder, not a file
+            }
+            let name_lower = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+            let at = self.entries.partition_point(|e| e.path.as_path() < p);
+            self.entries.insert(at, IndexEntry { path: p.to_path_buf(), name_lower, size: st.size, modified: st.modified });
+        }
+    }
+
+    /// Drops one file from the index (it turned out to be gone).
+    pub fn forget(&mut self, path: &Path) {
+        self.entries.retain(|e| e.path != path);
+    }
+
     /// The matching files, sorted, at most `limit`; and how many match in all.
     pub fn search(&self, q: &Query, sort: SortBy, desc: bool, limit: usize) -> (Vec<&IndexEntry>, usize) {
         let words = q.words();

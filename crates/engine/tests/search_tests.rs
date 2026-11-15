@@ -99,3 +99,37 @@ fn building_can_be_stopped() {
     assert!(r.is_none());
     assert_eq!(calls, 1);
 }
+
+#[test]
+fn the_index_follows_moves_without_listing_again() {
+    let mut fs = setup();
+    let folders = [WatchedFolder { path: p("/dl"), recursive: true }, WatchedFolder { path: p("/docs"), recursive: false }];
+    let mut idx = index(&fs, &folders);
+    let all = |idx: &FileIndex, text: &str| {
+        let q = Query { text: text.into(), ..Query::default() };
+        idx.search(&q, SortBy::Name, false, 100).0.iter().map(|e| e.path.clone()).collect::<Vec<_>>()
+    };
+    // A rule moves an invoice into a subfolder, another one leaves the folders, a copy appears.
+    fs.add_dir("/dl/Invoices");
+    org_fs::Fs::rename(&mut fs, &p("/dl/Invoice-0042.pdf"), &p("/dl/Invoices/Invoice-0042.pdf")).unwrap();
+    org_fs::Fs::remove_file(&mut fs, &p("/dl/invoice-0043.PDF")).unwrap();
+    fs.add_file("/docs/contract copy.pdf", 50_000, 8_000);
+    fs.add_file("/docs/deep/not-listed.pdf", 1, 1);
+    idx.update(
+        &fs,
+        &[
+            p("/dl/Invoice-0042.pdf"),
+            p("/dl/Invoices/Invoice-0042.pdf"),
+            p("/dl/invoice-0043.PDF"),
+            p("/elsewhere/invoice-0043.PDF"),
+            p("/docs/contract copy.pdf"),
+            p("/docs/deep/not-listed.pdf"),
+            p("/dl/Invoices"),
+        ],
+    );
+    assert_eq!(all(&idx, "invoice"), vec![p("/dl/Invoices/Invoice-0042.pdf"), p("/dl/sub/Invoice-0044.pdf")]);
+    assert_eq!(all(&idx, "contract"), vec![p("/docs/contract copy.pdf"), p("/docs/contract.pdf")], "not below a folder without subfolders");
+    assert!(idx.entries.windows(2).all(|w| w[0].path < w[1].path), "kept in order");
+    idx.forget(&p("/docs/contract.pdf"));
+    assert_eq!(all(&idx, "contract").len(), 1);
+}

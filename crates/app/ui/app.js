@@ -2642,10 +2642,11 @@ function renderDupsTab() {
 // ---------- Search tab ----------
 const SEARCH_SIZES = [['any', 'sizeAny', null, null], ['small', 'sizeSmall', null, 1 << 20], ['mid', 'sizeMid', 1 << 20, 100 * (1 << 20)],
   ['big', 'sizeBig', 100 * (1 << 20), null], ['huge', 'sizeHuge', 1 << 30, null]];
+const SEARCH_PAGE = 500;
 const SEARCH_DATES = [['any', 'dateAny'], ['today', 'dateToday'], ['7', 'date7'], ['30', 'date30'], ['365', 'dateYear'], ['old', 'dateOld']];
 
 function searchState() {
-  if (!S.search) S.search = { text: '', ext: '', size: 'any', date: 'any', sort: { key: 'name', desc: false }, data: null, error: null, loading: false, seq: 0 };
+  if (!S.search) S.search = { text: '', ext: '', size: 'any', date: 'any', sort: { key: 'name', desc: false }, limit: SEARCH_PAGE, data: null, error: null, loading: false, seq: 0, stamp: null };
   return S.search;
 }
 
@@ -2668,11 +2669,18 @@ function searchRequest(refresh) {
   else if (q.date === 'old') before = now - 365 * 86400;
   else if (q.date !== 'any') after = now - parseInt(q.date, 10) * 86400;
   return { folders: searchFolders(), text: q.text, extensions: q.ext, min_size: min, max_size: max, after, before,
-    sort: q.sort.key, desc: q.sort.desc, refresh: !!refresh };
+    sort: q.sort.key, desc: q.sort.desc, refresh: !!refresh, limit: q.limit };
 }
 
 let searchTimer = null;
 function scheduleSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(() => runSearch(), 200); }
+
+/// What the daemon has done so far: when it changes while the page is open, the results
+/// are looked up again (the index follows the journal, so this is quick).
+const daemonStamp = () => { const d = (S.status && S.status.daemon) || {}; return `${d.day}|${d.done || 0}|${d.failed || 0}`; };
+
+/// A new query starts again with the first page of results.
+function newQuery() { searchState().limit = SEARCH_PAGE; }
 
 /// Runs the search; while the folders are being listed, shows how far it got. A newer
 /// search supersedes an older one.
@@ -2681,6 +2689,7 @@ async function runSearch(refresh = false) {
   const req = searchRequest(refresh);
   if (!req.folders.length) { q.data = null; q.error = 'no_folders'; fillSearchResults(); return; }
   const my = ++q.seq;
+  q.stamp = daemonStamp();
   q.loading = true; fillSearchResults();
   const poll = setInterval(async () => {
     try {
@@ -2702,11 +2711,28 @@ async function runSearch(refresh = false) {
   }
 }
 
+async function openFile(p) {
+  try { await invoke('open_file', { path: p }); } catch (e) {
+    if (String(e) !== 'gone') { toast(String(e), true); return; }
+    toast(t('searchGone'), true);
+    const q = searchState();
+    if (q.data) { q.data.items = q.data.items.filter((f) => f.path !== p); q.data.total = Math.max(0, q.data.total - 1); fillSearchResults(); }
+  }
+}
+
 function searchMenu(ev, f) {
   contextMenu(ev, [
+    { label: t('ctxOpen'), run: () => openFile(f.path) },
     { label: t('ctxReveal'), run: () => reveal(f.path) },
-    { label: t('ctxCopyPath'), run: async () => { try { await navigator.clipboard.writeText(f.path); toast(t('copied')); } catch (_) { toast(t('copyFailed'), true); } } },
+    { label: t('ctxCopyPath'), run: () => copyPath(f.path) },
   ]);
+}
+
+/// Leaving the page keeps the index for a while (going back is instant), then frees it.
+let searchForget = null;
+function leftSearch() {
+  clearTimeout(searchForget);
+  searchForget = setTimeout(() => { if (S.tab !== 'search') { invoke('forget_search').catch(() => {}); if (S.search) S.search.data = null; } }, 10 * 60 * 1000);
 }
 
 function fillSearchResults() {
@@ -2721,7 +2747,7 @@ function fillSearchResults() {
     return;
   }
   if (!data) { fill(box, h('p', { id: 'search-progress', class: 'muted pad' }, t('searchStarting'))); return; }
-  const rows = data.items.map((f) => h('div', { class: 'frow srow', oncontextmenu: (ev) => searchMenu(ev, f), ondblclick: () => reveal(f.path) },
+  const rows = data.items.map((f) => h('div', { class: 'frow srow', title: t('searchRowHint'), oncontextmenu: (ev) => searchMenu(ev, f), ondblclick: () => openFile(f.path) },
     h('span', { class: 'ell', title: f.name }, f.name),
     h('span', { class: 'ell muted mono small', title: f.folder }, f.folder),
     h('span', { class: 'muted' }, fmtBytes(f.size)),
@@ -2737,15 +2763,19 @@ function fillSearchResults() {
     data.capped ? h('p', { class: 'warn pad' }, t('searchCapped', { n: fmtN(data.indexed) })) : null,
     h('div', { class: 'frow fhead muted srow' },
       [['name', 'colName'], ['folder', 'colFolder'], ['size', 'colSize'], ['modified', 'colModified']]
-        .map(([k, label]) => sortHeader(label, k, q.sort, (v) => { q.sort = v; runSearch(); })), h('span')),
-    rows.length ? h('div', { class: 'flist' }, rows) : h('p', { class: 'muted pad' }, t('searchNone')),
-    data.total > data.items.length ? h('p', { class: 'muted pad' }, t('searchTop', { n: fmtN(data.items.length) })) : null);
+        .map(([k, label]) => sortHeader(label, k, q.sort, (v) => { q.sort = v; newQuery(); runSearch(); })), h('span')),
+    rows.length ? h('div', { class: 'flist search-list' }, rows,
+      data.total > data.items.length ? h('div', { class: 'row pad search-more' },
+        h('span', { class: 'muted small' }, t('searchTop', { n: fmtN(data.items.length), total: fmtN(data.total) })),
+        h('button', { type: 'button', class: 'btn small', disabled: q.loading || q.limit >= 20000,
+          onclick: () => { q.limit = Math.min(20000, q.limit + SEARCH_PAGE * 2); runSearch(); } }, t('searchMore'))) : null)
+      : h('p', { class: 'muted pad' }, t('searchNone')));
 }
 
 function renderSearchTab() {
   const q = searchState();
   const folders = searchFolders();
-  const set = (k) => (v) => { q[k] = v; scheduleSearch(); };
+  const set = (k) => (v) => { q[k] = v; newQuery(); scheduleSearch(); };
   const head = h('section', { class: 'card' },
     h('div', { class: 'cbody' },
       h('div', { class: 'row search-row' },
@@ -2756,9 +2786,9 @@ function renderSearchTab() {
         h('label', { class: 'row small' }, t('searchExt'),
           textInput(q.ext, set('ext'), t('searchExt'), { placeholder: 'pdf, docx', class: 'inp ext-inp' })),
         h('label', { class: 'row small' }, t('searchSize'),
-          select(SEARCH_SIZES.map(([k, l]) => [k, t(l)]), q.size, (v) => { q.size = v; runSearch(); }, t('searchSize'))),
+          select(SEARCH_SIZES.map(([k, l]) => [k, t(l)]), q.size, (v) => { q.size = v; newQuery(); runSearch(); }, t('searchSize'))),
         h('label', { class: 'row small' }, t('searchDate'),
-          select(SEARCH_DATES.map(([k, l]) => [k, t(l)]), q.date, (v) => { q.date = v; runSearch(); }, t('searchDate'))),
+          select(SEARCH_DATES.map(([k, l]) => [k, t(l)]), q.date, (v) => { q.date = v; newQuery(); runSearch(); }, t('searchDate'))),
         h('span', { class: 'grow' }),
         h('span', { class: 'muted small', title: folders.map((f) => f.path).join('\n') }, t('searchWhere', { n: folders.length })),
         h('button', { type: 'button', class: 'btn small', title: t('searchRefreshHelp'), onclick: () => runSearch(true) }, t('searchRefresh')))));
@@ -3134,6 +3164,7 @@ async function refreshStatus() {
 }
 
 function setTab(tab) {
+  if (S.tab === 'search' && tab !== 'search') leftSearch();
   S.tab = tab;
   render();
   if (tab === 'journal') { loadJournal(); loadPending(); }
@@ -3224,11 +3255,22 @@ async function init() {
     if (document.hidden) return;
     if (S.tab === 'journal') { loadJournal(); loadPending(); }
     if (S.tab === 'home') { loadHome(); loadPending(); }
+    if (S.tab === 'search' && S.search && S.search.data && !S.search.loading && S.search.stamp !== daemonStamp()) runSearch();
   }, 4000);
   loadPending();
   loadHome();
   if (looksNew() && !onboarded()) firstRunWizard();
-  window.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); } });
+  window.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === 's') { e.preventDefault(); save(); }
+    if (k === 'f') {
+      e.preventDefault();
+      if (S.tab !== 'search') setTab('search');
+      const el = document.getElementById('search-q');
+      if (el) { el.focus(); el.select(); }
+    }
+  });
 }
 
 init();

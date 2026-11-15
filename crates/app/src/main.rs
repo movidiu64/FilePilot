@@ -376,17 +376,68 @@ fn progress_json(job: &PreviewJob) -> String {
 }
 
 /// The folder index behind the Search page: built on the first search and kept while the
-/// window is open, rebuilt when the folders change, on request or after [`INDEX_MAX_AGE`].
+/// window is open. Between searches it follows the journal (files the rules moved, renamed,
+/// copied or deleted, and restores), so it does not show files where they used to be; it is
+/// listed again when the folders change, on request, after [`INDEX_MAX_AGE`] or when an
+/// archive was extracted into it.
 #[derive(Default)]
 struct SearchState {
     job: PreviewJob,
-    index: Mutex<Option<(i64, org_engine::search::FileIndex)>>,
+    index: Mutex<Option<CachedIndex>>,
+    /// Paths changed by restores from the window (a restore does not add journal entries).
+    touched: Mutex<Vec<PathBuf>>,
 }
 
-/// How long a folder index is reused before searching lists the folders again.
+struct CachedIndex {
+    built_at: i64,
+    /// The last journal entry already applied to the index.
+    journal_id: u64,
+    index: org_engine::search::FileIndex,
+}
+
+impl SearchState {
+    fn touch(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        if let Ok(mut t) = self.touched.lock() {
+            t.extend(paths);
+        }
+    }
+}
+
+/// How long a folder index is reused before searching lists the folders again (it follows
+/// the rules' own changes in between; this catches changes made outside FilePilot).
 const INDEX_MAX_AGE: i64 = 300;
-/// How many results are sent to the window.
+/// How many results are sent to the window by default, and at most.
 const SEARCH_SHOWN: usize = 500;
+const SEARCH_SHOWN_MAX: usize = 20_000;
+
+/// The journal entries after `after`: the paths they touched, whether an archive was
+/// extracted (its files are not in the journal one by one) and the last entry that is
+/// finished (one still in progress is looked at again next time).
+fn journal_changes(db: &Path, after: u64) -> Option<(Vec<PathBuf>, bool, u64)> {
+    let store = Store::open(db).ok()?;
+    let mut paths = Vec::new();
+    let mut extracted = false;
+    let mut last = after;
+    let mut open = false;
+    for e in store.entries_after(after) {
+        if e.status == Status::InProgress {
+            open = true;
+        }
+        if !open {
+            last = e.id;
+        }
+        if e.kind == OpKind::Extract {
+            extracted |= e.status == Status::Done;
+            continue;
+        }
+        if e.kind == OpKind::Run {
+            continue;
+        }
+        paths.push(e.src.clone());
+        paths.extend(e.dst.clone());
+    }
+    Some((paths, extracted, last))
+}
 
 /// The folder list in a request: `[{"path": "...", "recursive": true}]`.
 fn folders_from(v: Option<&Value>) -> Vec<org_core::WatchedFolder> {
@@ -408,9 +459,10 @@ fn folders_from(v: Option<&Value>) -> Vec<org_core::WatchedFolder> {
 
 /// Searches the folders by name, extension, size and date. Request:
 /// `{"folders": [...], "text": "", "extensions": "", "min_size": n, "max_size": n,
-/// "after": ts, "before": ts, "sort": "name|folder|size|modified", "desc": bool, "refresh": bool}`.
+/// "after": ts, "before": ts, "sort": "name|folder|size|modified", "desc": bool, "refresh": bool,
+/// "limit": n}`.
 #[tauri::command]
-async fn search_files(text: String, st: State<'_, SearchState>) -> Result<String, String> {
+async fn search_files(text: String, st: State<'_, SearchState>, files: State<'_, DataFiles>) -> Result<String, String> {
     use org_engine::search::{FileIndex, Query, SortBy};
     let v = json::parse(&text).map_err(|e| format!("{e:?}"))?;
     let Value::Obj(o) = &v else { return Err("bad request".into()) };
@@ -437,13 +489,37 @@ async fn search_files(text: String, st: State<'_, SearchState>) -> Result<String
         _ => SortBy::Name,
     };
 
+    let limit = match num("limit") {
+        Some(n) if n > 0 => (n as usize).min(SEARCH_SHOWN_MAX),
+        _ => SEARCH_SHOWN,
+    };
+
     let mut guard = st.index.lock().map_err(|e| e.to_string())?;
     let now = now_ts();
-    let stale = match &*guard {
-        Some((at, idx)) => flag("refresh") || idx.folders != folders || now - at > INDEX_MAX_AGE,
+    let mut stale = match &*guard {
+        Some(c) => flag("refresh") || c.index.folders != folders || now - c.built_at > INDEX_MAX_AGE,
         None => true,
     };
+    // What the rules (and restores) changed since the last search.
+    if let (false, Some(c)) = (stale, guard.as_mut()) {
+        let mut touched = std::mem::take(&mut *st.touched.lock().map_err(|e| e.to_string())?);
+        match journal_changes(&files.db, c.journal_id) {
+            Some((paths, extracted, last)) => {
+                touched.extend(paths);
+                stale = extracted;
+                c.journal_id = last;
+            }
+            None => stale = true,
+        }
+        if !stale {
+            c.index.update(&SysFs, &touched);
+        }
+    }
     if stale {
+        st.touched.lock().map_err(|e| e.to_string())?.clear();
+        // The journal position is taken before listing: a change made during the listing
+        // is applied again next time, which does no harm.
+        let journal_id = Store::open(&files.db).map(|s| s.last_id()).unwrap_or(0);
         let job = &st.job;
         let my = job.gen.fetch_add(1, Ordering::SeqCst) + 1;
         job.stop.store(false, Ordering::SeqCst);
@@ -458,16 +534,17 @@ async fn search_files(text: String, st: State<'_, SearchState>) -> Result<String
         });
         job.set(|p| p.phase = "done");
         match built {
-            Some(idx) => *guard = Some((now, idx)),
+            Some(index) => *guard = Some(CachedIndex { built_at: now, journal_id, index }),
             None => return Err("stopped".into()),
         }
     }
-    let (at, idx) = guard.as_ref().expect("built");
-    let (hits, total) = idx.search(&q, sort, flag("desc"), SEARCH_SHOWN);
+    let c = guard.as_ref().expect("built");
+    let idx = &c.index;
+    let (hits, total) = idx.search(&q, sort, flag("desc"), limit);
     Ok(json::to_string_pretty(&obj(vec![
         ("total", int(total)),
         ("indexed", int(idx.entries.len())),
-        ("built_at", int(*at)),
+        ("built_at", int(c.built_at)),
         ("capped", Value::Bool(idx.capped)),
         ("unavailable", Value::Arr(idx.unavailable.iter().map(|p| s(&p.to_string_lossy())).collect())),
         (
@@ -487,6 +564,31 @@ async fn search_files(text: String, st: State<'_, SearchState>) -> Result<String
             ),
         ),
     ])))
+}
+
+/// Frees the search index (the window calls this a while after leaving the Search page).
+#[tauri::command]
+fn forget_search(st: State<'_, SearchState>) {
+    if let Ok(mut g) = st.index.lock() {
+        *g = None;
+    }
+}
+
+/// Opens a file with its program. A file that is gone is dropped from the search index and
+/// reported as `gone`.
+#[tauri::command]
+fn open_file(path: String, st: State<'_, SearchState>) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if !p.is_file() {
+        if let Ok(mut g) = st.index.lock() {
+            if let Some(c) = g.as_mut() {
+                c.index.forget(&p);
+            }
+        }
+        return Err("gone".into());
+    }
+    // Explorer opens a file with the program set for its type, like a double click there.
+    std::process::Command::new("explorer.exe").arg(&p).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1220,8 +1322,11 @@ fn outcome_json(id: u64, r: io::Result<UndoOutcome>) -> Value {
 
 /// Restaurează o operație din jurnal.
 #[tauri::command]
-async fn undo_entry(id: u64, force: bool, files: State<'_, DataFiles>) -> Result<String, String> {
+async fn undo_entry(id: u64, force: bool, files: State<'_, DataFiles>, search: State<'_, SearchState>) -> Result<String, String> {
     let mut store = Store::open(&files.db).map_err(|e| e.to_string())?;
+    if let Some(e) = store.get(id) {
+        search.touch([e.src.clone()].into_iter().chain(e.dst.clone()));
+    }
     let mut fs = SysFs;
     let r = undo(&mut fs, &mut store, id, force);
     Ok(json::to_string_pretty(&outcome_json(id, r)))
@@ -1229,8 +1334,9 @@ async fn undo_entry(id: u64, force: bool, files: State<'_, DataFiles>) -> Result
 
 /// Restaurează toate operațiile unei rulări, în ordine inversă.
 #[tauri::command]
-async fn undo_whole_run(run: u64, force: bool, files: State<'_, DataFiles>) -> Result<String, String> {
+async fn undo_whole_run(run: u64, force: bool, files: State<'_, DataFiles>, search: State<'_, SearchState>) -> Result<String, String> {
     let mut store = Store::open(&files.db).map_err(|e| e.to_string())?;
+    search.touch(store.by_run(run).into_iter().flat_map(|e| [Some(e.src), e.dst]).flatten());
     let mut fs = SysFs;
     let results: Vec<Value> =
         undo_run(&mut fs, &mut store, run, force).into_iter().map(|(id, r)| outcome_json(id, r)).collect();
@@ -1414,6 +1520,8 @@ fn main() {
             search_files,
             search_progress,
             stop_search,
+            forget_search,
+            open_file,
             get_rules,
             save_rules,
             preview,

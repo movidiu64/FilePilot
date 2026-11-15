@@ -6,7 +6,7 @@ a new major version may need you to review your rules, minor versions add featur
 ## [Unreleased]
 
 ### Added
-- **Search** page: find files in the folders your rules watch by name (words in any order, `*` and `?` patterns), extension, size and date, sorted as you like; results appear as you type and open in Explorer with a double-click.
+- **Search** page: find files in the folders your rules watch by name (words in any order, `*` and `?` patterns), extension, size and date, sorted as you like; results appear as you type, fill the window, follow what the rules move right away, and open with a double-click (or show in Explorer). **Ctrl+F** opens the page from anywhere.
 
 ## [1.1.0] - 2026-11-15
 

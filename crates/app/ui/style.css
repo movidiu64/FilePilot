@@ -496,3 +496,10 @@ form.modal .lbl > .inp { color: var(--text); font-size: 14px; }
 .search-meta { padding-top: 10px; padding-bottom: 6px; }
 .srow { grid-template-columns: minmax(180px, 2fr) minmax(160px, 3fr) 90px 165px 36px; }
 #search-results.stale .flist { opacity: .6; }
+/* Search: the results fill the window and scroll inside, the search box stays in view. */
+.page.search-page { overflow: hidden; }
+.search-page > #search-results { flex: 1 1 auto; min-height: 160px; display: flex; flex-direction: column; overflow: hidden; }
+.search-page > #search-results > * { flex: none; }
+.search-page > #search-results > .search-list { flex: 1 1 auto; max-height: none; min-height: 0; }
+.search-more { gap: 10px; justify-content: center; border-bottom: 0; }
+.srow { cursor: default; }
