@@ -65,6 +65,10 @@ cd crates\app; npx @tauri-apps/cli@2 build --config tauri.bundle.json --bundles 
 
 Every push runs the tests on Windows, builds the installer and tests it end to end (upgrade from the previous version, update with the daemon running, uninstall). A new version number on `main` publishes the release. See [Releasing](docs/guide.md#releasing).
 
+## Contributing
+
+Issues and pull requests are welcome; please read [CONTRIBUTING.md](CONTRIBUTING.md) first, including the license terms for contributions.
+
 ## License
 
 FilePilot is free software under the [GNU General Public License v3.0](LICENSE). You can use, study, modify and share it freely. If you distribute it, modified or not, you must make the source code available under the same license.
