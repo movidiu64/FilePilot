@@ -12,6 +12,7 @@ a new major version may need you to review your rules, minor versions add featur
 - **New variable** starts from ready-made examples (due date, first date, invoice number, supplier, total, year from the name, file type) with a sample document; the settings are numbered steps; pattern signs have buttons and the pattern is said in words.
 - **+ New variable…** from a rule (the variable menu and the Variable condition), with a way back to the rule.
 - English date tokens: `YYYY-MM-DD HH-mm-ss`, `MMMM` for the month name. The Romanian ones (`AAAA-LL-ZZ HH-MM-SS`) keep working; the English window inserts the English ones.
+- **Search** page: find files in the folders your rules watch by name (words in any order, `*` and `?` patterns), extension, size and date, sorted as you like; results appear as you type, fill the window, follow what the rules move right away, and open with a double-click (or show in Explorer). **Ctrl+F** opens the page from anywhere.
 
 ### Changed
 - Dictionaries are now one type of variable; the Variables tab and its texts say "variable".

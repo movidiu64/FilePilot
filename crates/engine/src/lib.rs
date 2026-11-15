@@ -12,6 +12,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 mod dups;
+pub mod search;
 pub use dups::{DirCache, DupFile, DupGroup, GroupStep, PrintRow, Prints, VerdictRow};
 
 use org_actions::{run_rule, run_rule_from, RunReport, StepStatus};

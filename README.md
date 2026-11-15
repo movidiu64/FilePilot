@@ -29,6 +29,7 @@ Pick the folders to watch, say which files you mean (*if*) and what should happe
 - ↩️ **Undo**: every operation goes through a write-ahead journal and can be restored, even after a crash or from the Recycle Bin.
 - 🧬 **Duplicates**: finds identical files (same folder or across folders), keeps the oldest copy, compares byte by byte before anything is removed. A fingerprint catalog keeps rescans of large folders fast.
 - 🛡️ **Safe by design**: files still downloading or open in another program are left alone; found files are never opened with other programs or executed; Windows-reserved names are fixed before a move.
+- 🔍 **Search**: find any file in your watched folders by name, extension, size or date, instantly after the first listing.
 - 🏠 **Home page**: status, things that need attention, pending confirmations, recent actions and a 7-day chart. Pause from the tray icon for an hour or until you resume.
 - 🪶 **Light**: written in Rust; with nothing to do it uses no CPU, and file content is read only when a rule needs it, once per file version.
 - 🌐 English and Romanian interface, light and dark theme, rule templates and a first-run guide.

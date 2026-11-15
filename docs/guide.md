@@ -8,6 +8,7 @@ FilePilot watches folders and applies *if–then* rules to the files that appear
 - [Actions](#actions)
 - [Archives](#archives)
 - [Variables](#variables) (and [your variables](#your-variables))
+- [Search](#search)
 - [Duplicates](#duplicates)
 - [Confirmations](#confirmations)
 - [Simulation](#simulation)
@@ -166,6 +167,17 @@ Pattern signs (the editor has a button for each and says the pattern in words, e
 If a variable finds nothing and has no fallback value, the actions that use it do not run for that file: the file stays where it is, and the journal records the step as failed with the reason (*the variable “Due” found no value in this file*). Such a file is not tried again until it changes. To leave these files alone quietly, put the condition *Variable … finds a value* in the rule. For variables that search the file's text, the text is read once per file for all rules, and the result of a **Variable** condition is remembered for each version of the file, like content conditions. Variables can be imported, exported and edited as JSON.
 
 Example: invoices filed by supplier and month. *Supplier* is a word-from-a-list variable (`Enel`, `Digi`, `E.ON`, default `Other`) and *Due* a date variable with format `YYYY-MM` and `Due date:` written right before it; the rule's condition is *Variable Due finds a value* and its action *Move to* `D:\Invoices\{var:Supplier}\{var:Due}`.
+
+## Search
+
+The **Search** page finds files in the folders your rules watch, like a small Everything for your own folders:
+
+- **Name**: words in any order (`final report` finds `Report FINAL v2.docx`); a word with `*` or `?` is a pattern for the whole name (`*.pdf`, `invoice-??.docx`). Letter case does not matter.
+- **Extensions** (`pdf, docx`), **size** (under 1 MB … over 1 GB) and **modified** (today, last 7 or 30 days, last year, older than a year).
+- Sort by name, folder, size or date. Double-click a file to open it, use its folder button to show it in Explorer, right-click for both and to copy its path.
+- The first 500 results are shown; **Show more** brings the next ones. **Ctrl+F** brings you to this page from anywhere in the window.
+
+The first search lists the folders, using only what the folder listing gives (name, size, date), without opening any file; every later search filters that list in memory, in milliseconds even with hundreds of thousands of files. What your rules move, rename, copy or delete (and what you restore from the journal) shows up at its new place right away, without listing the folders again. Changes made outside FilePilot show up when the list is redone: automatically after 5 minutes, when the rules' folders change, or with **Refresh**. The list is freed from memory 10 minutes after you leave the page. Folders of hidden rules are searched only while hidden rules are unlocked.
 
 ## Duplicates
 

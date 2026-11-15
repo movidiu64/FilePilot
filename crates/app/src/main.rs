@@ -375,6 +375,232 @@ fn progress_json(job: &PreviewJob) -> String {
     ]))
 }
 
+/// The folder index behind the Search page: built on the first search and kept while the
+/// window is open. Between searches it follows the journal (files the rules moved, renamed,
+/// copied or deleted, and restores), so it does not show files where they used to be; it is
+/// listed again when the folders change, on request, after [`INDEX_MAX_AGE`] or when an
+/// archive was extracted into it.
+#[derive(Default)]
+struct SearchState {
+    job: PreviewJob,
+    index: Mutex<Option<CachedIndex>>,
+    /// Paths changed by restores from the window (a restore does not add journal entries).
+    touched: Mutex<Vec<PathBuf>>,
+}
+
+struct CachedIndex {
+    built_at: i64,
+    /// The last journal entry already applied to the index.
+    journal_id: u64,
+    index: org_engine::search::FileIndex,
+}
+
+impl SearchState {
+    fn touch(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        if let Ok(mut t) = self.touched.lock() {
+            t.extend(paths);
+        }
+    }
+}
+
+/// How long a folder index is reused before searching lists the folders again (it follows
+/// the rules' own changes in between; this catches changes made outside FilePilot).
+const INDEX_MAX_AGE: i64 = 300;
+/// How many results are sent to the window by default, and at most.
+const SEARCH_SHOWN: usize = 500;
+const SEARCH_SHOWN_MAX: usize = 20_000;
+
+/// The journal entries after `after`: the paths they touched, whether an archive was
+/// extracted (its files are not in the journal one by one) and the last entry that is
+/// finished (one still in progress is looked at again next time).
+fn journal_changes(db: &Path, after: u64) -> Option<(Vec<PathBuf>, bool, u64)> {
+    let store = Store::open(db).ok()?;
+    let mut paths = Vec::new();
+    let mut extracted = false;
+    let mut last = after;
+    let mut open = false;
+    for e in store.entries_after(after) {
+        if e.status == Status::InProgress {
+            open = true;
+        }
+        if !open {
+            last = e.id;
+        }
+        if e.kind == OpKind::Extract {
+            extracted |= e.status == Status::Done;
+            continue;
+        }
+        if e.kind == OpKind::Run {
+            continue;
+        }
+        paths.push(e.src.clone());
+        paths.extend(e.dst.clone());
+    }
+    Some((paths, extracted, last))
+}
+
+/// The folder list in a request: `[{"path": "...", "recursive": true}]`.
+fn folders_from(v: Option<&Value>) -> Vec<org_core::WatchedFolder> {
+    match v {
+        Some(Value::Arr(a)) => a
+            .iter()
+            .filter_map(|f| match f {
+                Value::Obj(fo) => {
+                    let path = fo.iter().find_map(|(k, v)| match (k.as_str(), v) { ("path", Value::Str(p)) => Some(p.clone()), _ => None })?;
+                    let recursive = !fo.iter().any(|(k, v)| k == "recursive" && matches!(v, Value::Bool(false)));
+                    (!path.trim().is_empty()).then(|| org_core::WatchedFolder { path: PathBuf::from(path), recursive })
+                }
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Searches the folders by name, extension, size and date. Request:
+/// `{"folders": [...], "text": "", "extensions": "", "min_size": n, "max_size": n,
+/// "after": ts, "before": ts, "sort": "name|folder|size|modified", "desc": bool, "refresh": bool,
+/// "limit": n}`.
+#[tauri::command]
+async fn search_files(text: String, st: State<'_, SearchState>, files: State<'_, DataFiles>) -> Result<String, String> {
+    use org_engine::search::{FileIndex, Query, SortBy};
+    let v = json::parse(&text).map_err(|e| format!("{e:?}"))?;
+    let Value::Obj(o) = &v else { return Err("bad request".into()) };
+    let get = |k: &str| o.iter().find(|(x, _)| x == k).map(|(_, y)| y);
+    let text_of = |k: &str| match get(k) { Some(Value::Str(x)) => x.clone(), _ => String::new() };
+    let num = |k: &str| match get(k) { Some(Value::Int(n)) => Some(*n), _ => None };
+    let flag = |k: &str| matches!(get(k), Some(Value::Bool(true)));
+    let folders = folders_from(get("folders"));
+    if folders.is_empty() {
+        return Err("no_folders".into());
+    }
+    let q = Query {
+        text: text_of("text"),
+        extensions: text_of("extensions"),
+        min_size: num("min_size").map(|n| n.max(0) as u64),
+        max_size: num("max_size").map(|n| n.max(0) as u64),
+        modified_after: num("after"),
+        modified_before: num("before"),
+    };
+    let sort = match text_of("sort").as_str() {
+        "folder" => SortBy::Folder,
+        "size" => SortBy::Size,
+        "modified" => SortBy::Modified,
+        _ => SortBy::Name,
+    };
+
+    let limit = match num("limit") {
+        Some(n) if n > 0 => (n as usize).min(SEARCH_SHOWN_MAX),
+        _ => SEARCH_SHOWN,
+    };
+
+    let mut guard = st.index.lock().map_err(|e| e.to_string())?;
+    let now = now_ts();
+    let mut stale = match &*guard {
+        Some(c) => flag("refresh") || c.index.folders != folders || now - c.built_at > INDEX_MAX_AGE,
+        None => true,
+    };
+    // What the rules (and restores) changed since the last search.
+    if let (false, Some(c)) = (stale, guard.as_mut()) {
+        let mut touched = std::mem::take(&mut *st.touched.lock().map_err(|e| e.to_string())?);
+        match journal_changes(&files.db, c.journal_id) {
+            Some((paths, extracted, last)) => {
+                touched.extend(paths);
+                stale = extracted;
+                c.journal_id = last;
+            }
+            None => stale = true,
+        }
+        if !stale {
+            c.index.update(&SysFs, &touched);
+        }
+    }
+    if stale {
+        st.touched.lock().map_err(|e| e.to_string())?.clear();
+        // The journal position is taken before listing: a change made during the listing
+        // is applied again next time, which does no harm.
+        let journal_id = Store::open(&files.db).map(|s| s.last_id()).unwrap_or(0);
+        let job = &st.job;
+        let my = job.gen.fetch_add(1, Ordering::SeqCst) + 1;
+        job.stop.store(false, Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        job.set(|p| *p = PreviewProgress { gen: my, phase: "list", started: Some(started), ..Default::default() });
+        let built = FileIndex::build(&SysFs, &folders, &mut |pr| {
+            job.set(|p| {
+                p.total = pr.files;
+                p.checked = pr.folders;
+            });
+            !job.stop.load(Ordering::SeqCst)
+        });
+        job.set(|p| p.phase = "done");
+        match built {
+            Some(index) => *guard = Some(CachedIndex { built_at: now, journal_id, index }),
+            None => return Err("stopped".into()),
+        }
+    }
+    let c = guard.as_ref().expect("built");
+    let idx = &c.index;
+    let (hits, total) = idx.search(&q, sort, flag("desc"), limit);
+    Ok(json::to_string_pretty(&obj(vec![
+        ("total", int(total)),
+        ("indexed", int(idx.entries.len())),
+        ("built_at", int(c.built_at)),
+        ("capped", Value::Bool(idx.capped)),
+        ("unavailable", Value::Arr(idx.unavailable.iter().map(|p| s(&p.to_string_lossy())).collect())),
+        (
+            "items",
+            Value::Arr(
+                hits.iter()
+                    .map(|e| {
+                        obj(vec![
+                            ("path", s(&e.path.to_string_lossy())),
+                            ("name", s(e.name())),
+                            ("folder", s(&e.path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())),
+                            ("size", int(e.size)),
+                            ("modified", int(e.modified)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+    ])))
+}
+
+/// Frees the search index (the window calls this a while after leaving the Search page).
+#[tauri::command]
+fn forget_search(st: State<'_, SearchState>) {
+    if let Ok(mut g) = st.index.lock() {
+        *g = None;
+    }
+}
+
+/// Opens a file with its program. A file that is gone is dropped from the search index and
+/// reported as `gone`.
+#[tauri::command]
+fn open_file(path: String, st: State<'_, SearchState>) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if !p.is_file() {
+        if let Ok(mut g) = st.index.lock() {
+            if let Some(c) = g.as_mut() {
+                c.index.forget(&p);
+            }
+        }
+        return Err("gone".into());
+    }
+    // Explorer opens a file with the program set for its type, like a double click there.
+    std::process::Command::new("explorer.exe").arg(&p).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn search_progress(st: State<'_, SearchState>) -> String {
+    progress_json(&st.job)
+}
+
+#[tauri::command]
+fn stop_search(st: State<'_, SearchState>) {
+    st.job.stop.store(true, Ordering::SeqCst);
+}
+
 /// Căutarea din pagina Dubluri (aceeași mecanică de progres și oprire ca previzualizarea).
 #[derive(Default)]
 struct DupJob(PreviewJob);
@@ -1096,8 +1322,11 @@ fn outcome_json(id: u64, r: io::Result<UndoOutcome>) -> Value {
 
 /// Restaurează o operație din jurnal.
 #[tauri::command]
-async fn undo_entry(id: u64, force: bool, files: State<'_, DataFiles>) -> Result<String, String> {
+async fn undo_entry(id: u64, force: bool, files: State<'_, DataFiles>, search: State<'_, SearchState>) -> Result<String, String> {
     let mut store = Store::open(&files.db).map_err(|e| e.to_string())?;
+    if let Some(e) = store.get(id) {
+        search.touch([e.src.clone()].into_iter().chain(e.dst.clone()));
+    }
     let mut fs = SysFs;
     let r = undo(&mut fs, &mut store, id, force);
     Ok(json::to_string_pretty(&outcome_json(id, r)))
@@ -1105,8 +1334,9 @@ async fn undo_entry(id: u64, force: bool, files: State<'_, DataFiles>) -> Result
 
 /// Restaurează toate operațiile unei rulări, în ordine inversă.
 #[tauri::command]
-async fn undo_whole_run(run: u64, force: bool, files: State<'_, DataFiles>) -> Result<String, String> {
+async fn undo_whole_run(run: u64, force: bool, files: State<'_, DataFiles>, search: State<'_, SearchState>) -> Result<String, String> {
     let mut store = Store::open(&files.db).map_err(|e| e.to_string())?;
+    search.touch(store.by_run(run).into_iter().flat_map(|e| [Some(e.src), e.dst]).flatten());
     let mut fs = SysFs;
     let results: Vec<Value> =
         undo_run(&mut fs, &mut store, run, force).into_iter().map(|(id, r)| outcome_json(id, r)).collect();
@@ -1336,6 +1566,7 @@ fn main() {
         .manage(DupMemo::default())
         .manage(AppPrints::default())
         .manage(DupJob::default())
+        .manage(SearchState::default())
         // Fereastra pornește ascunsă; pagina o arată după primul desen, deja la poziția salvată.
         // Plasă de siguranță: dacă pagina nu apucă s-o arate, apare după 5 secunde.
         .setup(|app| {
@@ -1350,6 +1581,11 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             test_variable,
             file_text,
+            search_files,
+            search_progress,
+            stop_search,
+            forget_search,
+            open_file,
             get_rules,
             save_rules,
             preview,
