@@ -8,10 +8,14 @@ a new major version may need you to review your rules, minor versions add featur
 ### Added
 - **Variables that take values from the text**: a date (in the usual Romanian and English forms, written in your format), a word from a list, a simple pattern (`INV-####`) or a regular expression; the first, n-th or last occurrence; optionally only next to a label (`Total:`). Use them in destinations and names as `{var:Name}`.
 - **Variable** condition: a variable finds a value in the file, or finds nothing. Results on the file's text are remembered per file version.
-- Preview in the Variables tab: paste text or load a file and see every value found, with the one used highlighted.
+- Preview in the Variables tab, beside the settings: paste text or load a file and see every value found, with the one used highlighted.
+- **New variable** starts from ready-made examples (due date, first date, invoice number, supplier, total, year from the name, file type) with a sample document; the settings are numbered steps; pattern signs have buttons and the pattern is said in words.
+- **+ New variable…** from a rule (the variable menu and the Variable condition), with a way back to the rule.
+- English date tokens: `YYYY-MM-DD HH-mm-ss`, `MMMM` for the month name. The Romanian ones (`AAAA-LL-ZZ HH-MM-SS`) keep working; the English window inserts the English ones.
 
 ### Changed
 - Dictionaries are now one type of variable; the Variables tab and its texts say "variable".
+- A step that cannot start because a variable found no value (or a name is invalid) is now written in the journal as failed, with the reason, and counts as an error; such a file is no longer retried until it changes. Before, the file was left in place silently.
 
 ## [1.1.0] - 2026-11-15
 

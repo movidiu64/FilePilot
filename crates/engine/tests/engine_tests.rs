@@ -5,7 +5,7 @@ use org_core::timefmt::{timestamp, Lang};
 use org_core::*;
 use org_engine::*;
 use org_fs::{FileStat, Fs, MemFs};
-use org_journal::{Journal, MemJournal, OpKind};
+use org_journal::{Journal, MemJournal, OpKind, Status};
 
 fn p(s: &str) -> PathBuf {
     PathBuf::from(s)
@@ -793,4 +793,42 @@ fn a_missing_or_unknown_variable_finds_nothing() {
     r.actions = vec![Action::Trash { remove_empty: false }];
     Engine::new(vec![r], 0).scan(&mut fs, &mut MemJournal::new(), &ctx(&d, T0));
     assert_eq!(fs.trashed(), vec![p("/dl/a.txt")]);
+}
+
+#[test]
+fn a_variable_without_a_value_is_reported_once_and_not_retried() {
+    let mut fs = MemFs::new();
+    fs.add_file_with("/dl/no date.txt", b"nothing useful", 1);
+    let mut d = HashMap::new();
+    d.insert(
+        "Due".to_string(),
+        org_core::Dictionary {
+            field: TextField::Content,
+            entries: Vec::new(),
+            default: None,
+            extract: Some(org_core::Extract { kind: org_core::ExtractKind::Date { format: "AAAA-LL".into() }, ..Default::default() }),
+        },
+    );
+    let mut r = pdf_rule(1);
+    r.folders[0].recursive = false;
+    r.condition = Condition::AllFiles;
+    r.actions = vec![Action::Move {
+        dest: Template::parse("/out/{var:Due}").unwrap(),
+        conflict: Conflict::Rename,
+        keep_structure: false,
+        remove_empty: false,
+    }];
+    let mut eng = Engine::new(vec![r], 0);
+    let mut j = MemJournal::new();
+    eng.scan(&mut fs, &mut j, &ctx(&d, T0));
+    assert!(fs.exists(&p("/dl/no date.txt")), "the file stays");
+    let e = &j.entries()[0];
+    assert_eq!((e.kind, e.src.clone()), (OpKind::Move, p("/dl/no date.txt")));
+    match &e.status {
+        Status::Failed(m) => assert!(m.contains("„Due”") && m.contains("nicio valoare"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(eng.next_retry_at(), None, "the same file would fail the same way");
+    eng.scan(&mut fs, &mut j, &ctx(&d, T0 + 4000));
+    assert_eq!(j.entries().len(), 1, "an unchanged file is not tried again");
 }

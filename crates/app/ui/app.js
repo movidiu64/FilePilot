@@ -321,24 +321,30 @@ const MONTHS = {
 };
 const pad2 = (n) => String(n).padStart(2, '0');
 
-/// Aceleași jetoane ca în nucleu (timefmt::format): AAAA, AA, LLLL, LL, ZZ, HH, MM, SS.
+/// The same tokens as the core (timefmt::format): Romanian AAAA, AA, LLLL, LL, ZZ, HH, MM
+/// (minutes), SS, or English YYYY, YY, MMMM, MM (month), DD, HH, mm, ss; a format uses one set.
+const englishTokens = (f) => ['YY', 'DD', 'MMMM', 'mm', 'ss'].some((x) => f.includes(x)) || f.trim() === 'MM';
 function fmtDate(ts, fmt) {
   const d = new Date(ts * 1000);
+  const toks = englishTokens(fmt)
+    ? [['YYYY', () => String(d.getFullYear()).padStart(4, '0')], ['YY', () => pad2(d.getFullYear() % 100)],
+      ['MMMM', () => MONTHS[LANG === 'en' ? 'en' : 'ro'][d.getMonth()]], ['MM', () => pad2(d.getMonth() + 1)],
+      ['DD', () => pad2(d.getDate())], ['HH', () => pad2(d.getHours())], ['mm', () => pad2(d.getMinutes())], ['ss', () => pad2(d.getSeconds())]]
+    : [['AAAA', () => String(d.getFullYear()).padStart(4, '0')], ['AA', () => pad2(d.getFullYear() % 100)],
+      ['LLLL', () => MONTHS[LANG === 'en' ? 'en' : 'ro'][d.getMonth()]], ['LL', () => pad2(d.getMonth() + 1)],
+      ['ZZ', () => pad2(d.getDate())], ['HH', () => pad2(d.getHours())], ['MM', () => pad2(d.getMinutes())], ['SS', () => pad2(d.getSeconds())]];
   let out = '';
   for (let i = 0; i < fmt.length;) {
-    const r = fmt.slice(i);
-    if (r.startsWith('AAAA')) { out += String(d.getFullYear()).padStart(4, '0'); i += 4; }
-    else if (r.startsWith('AA')) { out += pad2(d.getFullYear() % 100); i += 2; }
-    else if (r.startsWith('LLLL')) { out += MONTHS[LANG === 'en' ? 'en' : 'ro'][d.getMonth()]; i += 4; }
-    else if (r.startsWith('LL')) { out += pad2(d.getMonth() + 1); i += 2; }
-    else if (r.startsWith('ZZ')) { out += pad2(d.getDate()); i += 2; }
-    else if (r.startsWith('HH')) { out += pad2(d.getHours()); i += 2; }
-    else if (r.startsWith('MM')) { out += pad2(d.getMinutes()); i += 2; }
-    else if (r.startsWith('SS')) { out += pad2(d.getSeconds()); i += 2; }
-    else { out += fmt[i]; i += 1; }
+    const hit = toks.find(([k]) => fmt.startsWith(k, i));
+    if (hit) { out += hit[1](); i += hit[0].length; } else { out += fmt[i]; i += 1; }
   }
   return out;
 }
+
+/// Date formats are written here with the Romanian tokens; the English window shows and
+/// inserts the English ones (the core understands both).
+const TOK_EN = { AAAA: 'YYYY', AA: 'YY', LLLL: 'MMMM', LL: 'MM', ZZ: 'DD', MM: 'mm', SS: 'ss' };
+const fmtTok = (f) => (LANG === 'en' ? f.replace(/AAAA|AA|LLLL|LL|ZZ|MM|SS/g, (m) => TOK_EN[m]) : f);
 
 /// Fișierul pe care se arată exemplele: primul din previzualizare sau unul inventat.
 function sampleFile() {
@@ -375,15 +381,18 @@ function varGroups() {
     ['{size}', t('varSize'), String(f.size)], ['{folder}', t('varFolder'), f.folder], ['{path}', t('varPath'), f.path],
   ]]];
   for (const [src, title, ts] of [['modified', t('vgModified'), f.modified], ['created', t('vgCreated'), f.created], ['now', t('vgNow'), now]]) {
-    const items = DATE_PRESETS.map(([fmt, key]) => [`{${src}:${fmt}}`, t(key), fmtDate(ts, fmt)]);
-    items.push([`{${src}:AAAA}\\{${src}:LL}`, t('fmtYearMonthFolders'), fmtDate(ts, 'AAAA') + '\\' + fmtDate(ts, 'LL')]);
+    const items = DATE_PRESETS.map(([fmt, key]) => [`{${src}:${fmtTok(fmt)}}`, t(key), fmtDate(ts, fmtTok(fmt))]);
+    items.push([`{${src}:${fmtTok('AAAA')}}\\{${src}:${fmtTok('LL')}}`, t('fmtYearMonthFolders'), fmtDate(ts, 'AAAA') + '\\' + fmtDate(ts, 'LL')]);
     groups.push([title, items]);
   }
   const dicts = Object.entries(S.doc.dictionaries || {});
-  if (dicts.length) groups.push([t('vgDicts'), dicts.map(([n, d]) => [`{var:${n}}`, n, dictValue(d, f)])]);
+  groups.push([t('vgDicts'), [...dicts.map(([n, d]) => [`{var:${n}}`, n, d.extract ? t('varFromText') : dictValue(d, f)]),
+    [NEW_VAR, t('varNewFromRule'), '']]]);
   return groups;
 }
 
+/// The item of the variable menu that makes a new variable.
+const NEW_VAR = '+';
 let openPop = null;
 function closeVarMenu() {
   if (!openPop) return;
@@ -412,10 +421,10 @@ function varMenu(onPick) {
       fill(list, groups.length ? groups.map(([title, items]) => h('div', { class: 'var-group' },
         h('div', { class: 'var-gtitle' }, title),
         items.map(([tok, label, ex]) => h('button', { type: 'button', class: 'var-item', role: 'menuitem', 'data-tok': tok,
-          onclick: () => { closeVarMenu(); onPick(tok); } },
+          onclick: () => { closeVarMenu(); if (tok === NEW_VAR) newVarFromRule((n) => onPick(`{var:${n}}`)); else onPick(tok); } },
           h('span', { class: 'var-label' }, label),
-          h('span', { class: 'var-ex' }, ex || '—'),
-          h('span', { class: 'var-tok mono' }, tok))))) : h('p', { class: 'muted pad' }, t('noVarFound')));
+          h('span', { class: 'var-ex' }, tok === NEW_VAR ? '' : ex || '—'),
+          h('span', { class: 'var-tok mono' }, tok === NEW_VAR ? '' : tok))))) : h('p', { class: 'muted pad' }, t('noVarFound')));
     };
     search.oninput = fillList;
     search.onkeydown = (e) => {
@@ -604,12 +613,12 @@ const TEMPLATES = [
   { key: 'old', make: (dl) => ({ name: t('tplOld'), enabled: false, hidden: false, continue_after_move: false,
     folders: dl ? [{ path: dl, recursive: false }] : [],
     condition: { type: 'all', items: [{ type: 'date', field: 'modified', op: 'older_than_days', value: 30 }] },
-    actions: [{ type: 'move', dest: tplDir('Arhiva', 'Archive') + '\\{modified:AAAA-LL}', conflict: 'rename', keep_structure: false, remove_empty: false }] }) },
+    actions: [{ type: 'move', dest: tplDir('Arhiva', 'Archive') + `\\{modified:${fmtTok('AAAA-LL')}}`, conflict: 'rename', keep_structure: false, remove_empty: false }] }) },
   { key: 'invoices', make: (dl) => ({ name: t('tplInvoices'), enabled: false, hidden: false, continue_after_move: false,
     folders: dl ? [{ path: dl, recursive: false }] : [],
     condition: { type: 'all', items: [extIs('pdf'), { type: 'any', items: [
       { type: 'text', field: 'name', op: 'contains', value: 'factur' }, { type: 'text', field: 'name', op: 'contains', value: 'invoice' }] }] },
-    actions: [{ type: 'move', dest: tplDir('Facturi', 'Invoices') + '\\{modified:AAAA}\\{modified:LL}', conflict: 'rename', keep_structure: false, remove_empty: false }] }) },
+    actions: [{ type: 'move', dest: tplDir('Facturi', 'Invoices') + `\\{modified:${fmtTok('AAAA')}}\\{modified:${fmtTok('LL')}}`, conflict: 'rename', keep_structure: false, remove_empty: false }] }) },
   { key: 'cleanup', make: (dl) => ({ name: t('tplCleanup'), enabled: false, hidden: false, continue_after_move: false,
     folders: dl ? [{ path: dl, recursive: false }] : [],
     condition: { type: 'any', items: [extIs('tmp'), extIs('bak'), extIs('old')] },
@@ -859,12 +868,6 @@ async function deleteDict(name) {
   markDirty(); render();
 }
 
-function newDict() {
-  const n = uniqueDictName(t('newDict'));
-  S.doc.dictionaries[n] = { field: 'extension', entries: [['', '']], default: null };
-  S.dictSel = n; markDirty(); render();
-}
-
 // ---------- dicționare: export, import ----------
 async function exportDicts(names) {
   try {
@@ -966,7 +969,7 @@ async function copyText(ta) {
   toast(t('copied'));
 }
 
-function renderDictJsonCard(name, d) {
+function renderDictJsonCard(name, d, bare) {
   S.dictJsonEdited = false;
   const ta = h('textarea', { id: 'dict-json-ta', class: 'inp mono json-ta', spellcheck: false, rows: 12, 'aria-label': t('dictJsonTitle'),
     oninput: () => {
@@ -975,15 +978,15 @@ function renderDictJsonCard(name, d) {
       const m = document.getElementById('dict-json-state'); if (m) m.textContent = t('jsonUnapplied');
     } });
   ta.value = dictJson(name, d);
-  return h('section', { class: 'card' },
-    h('div', { class: 'ch' }, h('span', {}, t('dictJsonTitle')),
-      h('span', { class: 'row' }, h('span', { id: 'dict-json-state', class: 'muted small' }),
-        h('button', { type: 'button', class: 'btn small', onclick: () => copyText(ta) }, t('copy')),
-        h('button', { type: 'button', class: 'btn small', onclick: () => exportDicts([name]) }, t('exportDict')),
-        h('button', { type: 'button', class: 'btn small primary', onclick: applyDictJson }, t('apply')))),
-    h('div', { class: 'cbody' }, ta,
-      h('p', { class: 'hint' }, t('dictJsonHelp')),
-      h('p', { id: 'dict-json-err', class: 'err' })));
+  const tools = h('span', { class: 'row' }, h('span', { id: 'dict-json-state', class: 'muted small' }),
+    h('button', { type: 'button', class: 'btn small', onclick: () => copyText(ta) }, t('copy')),
+    h('button', { type: 'button', class: 'btn small', onclick: () => exportDicts([name]) }, t('exportDict')),
+    h('button', { type: 'button', class: 'btn small primary', onclick: applyDictJson }, t('apply')));
+  const body = h('div', { class: 'cbody' }, bare ? h('div', { class: 'row end' }, tools) : null, ta,
+    h('p', { class: 'hint' }, t('dictJsonHelp')),
+    h('p', { id: 'dict-json-err', class: 'err' }));
+  if (bare) return body;
+  return h('section', { class: 'card' }, h('div', { class: 'ch' }, h('span', {}, t('dictJsonTitle')), tools), body);
 }
 
 // ---------- reguli: meniul de clic dreapta ----------
@@ -1058,7 +1061,7 @@ function tplVariables() {
     ['{created:ZZ}', 'varCreatedDay'], ['{created:AAAA-LL-ZZ}', 'varCreatedFull'],
     ['{modified:AAAA}', 'varModifiedYear'], ['{modified:LL}', 'varModifiedMonth'],
     ['{modified:AAAA-LL-ZZ}', 'varModifiedFull'], ['{now:AAAA-LL-ZZ}', 'varNowFull'],
-  ].map(([tok, key]) => [tok, `${t(key)}  ${tok}`]);
+  ].map(([tok, key]) => [fmtTok(tok), `${t(key)}  ${fmtTok(tok)}`]);
   const dicts = Object.keys(S.doc.dictionaries).map((n) => [`{var:${n}}`, `${t('varDict', { name: n })}  {var:${n}}`]);
   return base.concat(dicts);
 }
@@ -1157,11 +1160,13 @@ function renderLeaf(node, parent, index) {
   } else if (node.type === 'var') {
     const names = Object.keys(S.doc.dictionaries);
     if (node.name && !names.includes(node.name)) names.unshift(node.name);
+    const make = () => newVarFromRule((n) => { node.name = n; });
     if (names.length) {
-      vi = select(names.map((n) => [n, n]), node.name, (v) => { node.name = v; markDirty(); render(); }, t('fieldVar'));
+      vi = select([...names.map((n) => [n, n]), [NEW_VAR, t('varNewFromRule')]], node.name,
+        (v) => { if (v === NEW_VAR) { render(); make(); return; } node.name = v; markDirty(); render(); }, t('fieldVar'));
       kids.push(vi);
     } else {
-      kids.push(h('button', { type: 'button', class: 'btn small', onclick: () => { S.tab = 'vars'; newDict(); } }, t('varCreate')));
+      kids.push(h('button', { type: 'button', class: 'btn small', onclick: make }, t('varCreate')));
     }
     kids.push(select([['true', t('varFound')], ['false', t('varNotFound')]], String(node.found !== false), (v) => { node.found = v === 'true'; markDirty(); render(); }, t('operator')));
     kids.push(h('span', { class: 'grow' }));
@@ -2682,45 +2687,76 @@ function renderVarsTab() {
     names.map((n) => h('button', { type: 'button', class: 'rule-item' + (n === S.dictSel ? ' sel' : ''), title: t('ctxHint'),
       onclick: () => { S.dictSel = n; render(); }, oncontextmenu: (e) => dictMenu(e, n) },
       h('span', { class: 'rname ell' }, n),
-      h('span', { class: 'muted small mono' }, `{var:${n}}`))),
-    h('button', { type: 'button', class: 'btn add', onclick: newDict }, icon('plus'), t('newDict')),
+      h('span', { class: 'muted small' }, t(VAR_KIND_LABEL[varKind(S.doc.dictionaries[n])])))),
+    h('button', { type: 'button', class: 'btn add', onclick: () => newDict() }, icon('plus'), t('newDict')),
     h('div', { class: 'row list-tools' },
       h('button', { type: 'button', class: 'btn small grow', onclick: importDicts }, t('importDicts')),
       h('button', { type: 'button', class: 'btn small grow', disabled: names.length === 0, onclick: () => exportDicts(names) }, t('exportAllDicts'))));
-  if (!d) return h('div', { class: 'rules-layout' }, list, h('main', { class: 'editor empty' }, h('p', { class: 'muted' }, t('noDictsHelp'))));
+  if (!d) {
+    return h('div', { class: 'rules-layout' }, list, h('main', { class: 'editor empty' },
+      h('div', { class: 'var-empty' },
+        h('p', {}, t('noDictsHelp')),
+        h('button', { type: 'button', class: 'btn primary', onclick: () => newDict() }, icon('plus'), t('newDict')))));
+  }
 
   const users = dictUsers(S.dictSel);
   const name = S.dictSel;
+  const tok = `{var:${name}}`;
+  const back = S.varBack && S.doc.rules[S.varBack.sel];
+  const steps = h('section', { class: 'card' },
+    h('div', { class: 'cbody var-steps' },
+      varStep(1, t('varStepWhat'), renderVarWhat(d)),
+      varStep(2, t('varStepWhere'),
+        select(TEXT_FIELDS.map((k) => [k, t(FIELD_LABEL[k])]), d.field, (v) => { d.field = v; markDirty(); render(); }, t('dictField')),
+        h('p', { class: 'hint' }, t(d.field === 'content' ? 'varWhereContent' : 'varWhereName'))),
+      d.extract ? varStep(3, t('varStepWhich'), renderVarWhich(d)) : null,
+      varStep(d.extract ? 4 : 3, t('varStepNone'),
+        textInput(d.default ?? '', (v) => { d.default = v === '' ? null : v; markDirty(); schedulePreview(); }, t('dictDefault'), { placeholder: t('dictDefaultNone') }),
+        h('p', { class: 'hint' }, t('varNoneHelp')))));
+  const use = h('section', { class: 'card' },
+    h('div', { class: 'ch' }, h('span', {}, t('varUseTitle'))),
+    h('div', { class: 'cbody' },
+      h('div', { class: 'row wrap var-use' },
+        h('code', { class: 'var-tok-big' }, tok),
+        h('button', { type: 'button', class: 'btn small', onclick: () => copyPath(tok) }, t('copy'))),
+      h('p', { class: 'hint' }, t('varUseHelp')),
+      h('p', { class: users.length ? 'small' : 'muted small' },
+        users.length ? t('dictUsedBy', { rules: users.map((r) => r.name).join(', ') }) : t('dictUnused'))));
+  const json = h('details', { class: 'card var-json', open: !!S.varJsonOpen, ontoggle: (e) => { S.varJsonOpen = e.target.open; } },
+    h('summary', { class: 'ch' }, t('dictJsonTitle')), renderDictJsonCard(name, d, true));
   const main = h('main', { class: 'editor' },
+    back ? h('div', { class: 'var-back' },
+      h('button', { type: 'button', class: 'btn small', onclick: () => { const sel = S.varBack.sel; S.varBack = null; S.sel = sel; setTab('rules'); } },
+        '← ', t('varBack', { rule: back.name })),
+      h('span', { class: 'muted small' }, t('varBackHint'))) : null,
     h('div', { class: 'row name-row' },
       h('input', { class: 'inp name dict-name', type: 'text', value: name, 'aria-label': t('dictName'),
         onchange: (e) => { if (!renameDict(name, e.target.value)) e.target.value = name; },
         onkeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } }),
       h('button', { type: 'button', class: 'btn', onclick: () => duplicateDict(name) }, t('duplicate')),
       h('button', { type: 'button', class: 'btn danger', onclick: () => deleteDict(name) }, t('deleteDict'))),
-    h('p', { class: 'hint' }, t(d.extract ? 'varExtractHelp' : 'dictHelp'), ' ', t('dictUsage', { usage: `{var:${name}}` }), ' ',
-      users.length ? t('dictUsedBy', { rules: users.map((r) => r.name).join(', ') }) : t('dictUnused')),
-    h('section', { class: 'card' },
-      h('div', { class: 'cbody' },
-        h('label', { class: 'lbl' }, t('varKind'),
-          select(VAR_KINDS_UI.map((k) => [k, t(VAR_KIND_LABEL[k])]), varKind(d), (v) => { setVarKind(d, v); markDirty(); render(); }, t('varKind'))),
-        h('label', { class: 'lbl' }, t('dictField'),
-          select(TEXT_FIELDS.map((k) => [k, t(FIELD_LABEL[k])]), d.field, (v) => { d.field = v; markDirty(); render(); }, t('dictField'))),
-        d.extract ? renderExtractFields(d) : renderDictEntries(d),
-        h('label', { class: 'lbl' }, t('dictDefault'),
-          textInput(d.default ?? '', (v) => { d.default = v === '' ? null : v; markDirty(); }, t('dictDefault'), { placeholder: t('dictDefaultNone') })))),
-    renderVarPreview(name, d),
-    renderDictJsonCard(name, d));
+    h('p', { class: 'hint' }, t('varIntro')),
+    h('div', { class: 'var-layout' },
+      h('div', { class: 'var-col' }, steps, use),
+      h('div', { class: 'var-col var-side' }, renderVarPreview(name, d))),
+    json);
   return h('div', { class: 'rules-layout' }, list, main);
+}
+
+function varStep(n, title, ...body) {
+  return h('div', { class: 'var-step' },
+    h('div', { class: 'var-step-n', 'aria-hidden': 'true' }, String(n)),
+    h('div', { class: 'var-step-body' }, h('div', { class: 'var-step-title' }, title), ...body));
 }
 
 // ---------- variables: kinds, extraction, preview ----------
 const VAR_KINDS = ['date', 'words', 'pattern', 'regex'];
 const VAR_KINDS_UI = ['dict', ...VAR_KINDS];
 const VAR_KIND_LABEL = { dict: 'varKindDict', date: 'varKindDate', words: 'varKindWords', pattern: 'varKindPattern', regex: 'varKindRegex' };
+const VAR_KIND_HELP = { dict: 'varKindDictHelp', date: 'varKindDateHelp', words: 'varKindWordsHelp', pattern: 'varKindPatternHelp', regex: 'varKindRegexHelp' };
 const DATE_FORMATS = ['AAAA-LL-ZZ', 'ZZ.LL.AAAA', 'AAAA-LL', 'AAAA', 'LLLL AAAA'];
 
-const varKind = (d) => (d.extract ? d.extract.kind : 'dict');
+const varKind = (d) => (d && d.extract ? d.extract.kind : 'dict');
 
 function setVarKind(d, kind) {
   if (kind === varKind(d)) return;
@@ -2732,7 +2768,7 @@ function setVarKind(d, kind) {
   }
   const old = d.extract || {};
   d.extract = { kind, occurrence: old.occurrence ?? 1, before: old.before ?? '', after: old.after ?? '' };
-  if (kind === 'date') d.extract.format = 'AAAA-LL-ZZ';
+  if (kind === 'date') d.extract.format = fmtTok('AAAA-LL-ZZ');
   if (kind === 'words') d.extract.words = [];
   if (kind === 'pattern') d.extract.pattern = '';
   if (kind === 'regex') d.extract.regex = '';
@@ -2741,52 +2777,111 @@ function setVarKind(d, kind) {
   d.entries = d.entries.filter((e) => e[0] || e[1]);
 }
 
+/// Step 1: the kind and what it looks for.
+function renderVarWhat(d) {
+  const kind = varKind(d);
+  const kinds = h('div', { class: 'seg var-kinds', role: 'group', 'aria-label': t('varKind') },
+    VAR_KINDS_UI.map((k) => h('button', { type: 'button', class: k === kind ? 'on' : '', 'aria-pressed': String(k === kind),
+      onclick: () => { setVarKind(d, k); markDirty(); render(); } }, t(VAR_KIND_LABEL[k]))));
+  return h('div', {}, kinds, h('p', { class: 'hint' }, t(VAR_KIND_HELP[kind])), d.extract ? renderExtractWhat(d) : renderDictEntries(d));
+}
+
 function renderDictEntries(d) {
   return h('div', {},
-    d.field === 'content' ? h('p', { class: 'hint' }, t('dictContentHelp')) : null,
     h('div', { class: 'dict-head muted' }, h('span', {}, t('dictKey')), h('span', {}, t('dictValue')), h('span')),
     d.entries.map((en, i) => h('div', { class: 'dict-row' },
-      textInput(en[0], (v) => { en[0] = v; markDirty(); }, t('dictKey'), { placeholder: t('dictKeyPh') }),
-      textInput(en[1], (v) => { en[1] = v; markDirty(); }, t('dictValue')),
+      textInput(en[0], (v) => { en[0] = v; markDirty(); schedulePreview(); }, t('dictKey'), { placeholder: t('dictKeyPh') }),
+      textInput(en[1], (v) => { en[1] = v; markDirty(); schedulePreview(); }, t('dictValue')),
       iconBtn('x', t('removeEntry'), () => { d.entries.splice(i, 1); markDirty(); render(); }))),
     h('p', { class: 'hint' }, t('dictCommaHint')),
     h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn', onclick: () => { d.entries.push(['', '']); markDirty(); render(); } }, t('addEntry'))));
 }
 
-function renderExtractFields(d) {
+/// The signs of a pattern, with what they stand for.
+const PATTERN_SIGNS = [['#', 'patDigit'], ['@', 'patLetter'], ['?', 'patAny'], ['%', 'patNumber'], ['*', 'patText'], [' ', 'patSpace']];
+
+/// A pattern in words: "INV-####" → „INV-” + 4 cifre.
+function describePattern(p) {
+  const parts = [];
+  let lit = '';
+  const [q1, q2] = LANG === 'en' ? ['“', '”'] : ['„', '”'];
+  const flush = () => { if (lit) { parts.push(q1 + lit + q2); lit = ''; } };
+  for (let i = 0; i < p.length;) {
+    const c = p[i];
+    if (c === '\\' && i + 1 < p.length) { lit += p[i + 1]; i += 2; continue; }
+    let j = i;
+    while (j < p.length && p[j] === c) j++;
+    const n = j - i;
+    if (c === '#') { flush(); parts.push(t(n === 1 ? 'patDigit1' : 'patDigitN', { n })); }
+    else if (c === '@') { flush(); parts.push(t(n === 1 ? 'patLetter1' : 'patLetterN', { n })); }
+    else if (c === '?') { flush(); parts.push(t(n === 1 ? 'patAny1' : 'patAnyN', { n })); }
+    else if (c === '%') { flush(); parts.push(t('patNumber1')); j = i + 1; }
+    else if (c === '*') { flush(); parts.push(t('patText1')); }
+    else if (/\s/.test(c)) { flush(); parts.push(t('patSpace1')); }
+    else { lit += p.slice(i, j); }
+    i = j;
+  }
+  flush();
+  return parts.join(' + ');
+}
+
+function insertAtCaret(input, text) {
+  const st = input.selectionStart ?? input.value.length;
+  const en = input.selectionEnd ?? st;
+  input.value = input.value.slice(0, st) + text + input.value.slice(en);
+  input.focus();
+  input.setSelectionRange(st + text.length, st + text.length);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function renderExtractWhat(d) {
   const x = d.extract;
   const upd = (k) => (v) => { x[k] = v; markDirty(); schedulePreview(); };
-  let what;
   if (x.kind === 'date') {
-    what = h('div', {},
+    const fmts = DATE_FORMATS.map(fmtTok);
+    return h('div', {},
       h('label', { class: 'lbl' }, t('varDateFormat'),
         h('div', { class: 'row' },
-          textInput(x.format ?? '', upd('format'), t('varDateFormat'), { placeholder: 'AAAA-LL-ZZ' }),
-          select([['', t('varFormatPresets')], ...DATE_FORMATS.map((f) => [f, f])], '', (v) => { if (v) { x.format = v; markDirty(); render(); schedulePreview(); } }, t('varFormatPresets')))),
+          textInput(x.format ?? '', upd('format'), t('varDateFormat'), { placeholder: fmtTok('AAAA-LL-ZZ'), class: 'inp mono' }),
+          select([['', t('varFormatPresets')], ...fmts.map((f) => [f, `${f}  →  ${fmtDate(Math.floor(Date.now() / 1000), f)}`])], '',
+            (v) => { if (v) { x.format = v; markDirty(); render(); schedulePreview(); } }, t('varFormatPresets')))),
       h('p', { class: 'hint' }, t('varDateHelp')));
-  } else if (x.kind === 'words') {
-    const ta = h('textarea', { class: 'inp', rows: 5, 'aria-label': t('varWords'), spellcheck: false,
+  }
+  if (x.kind === 'words') {
+    const ta = h('textarea', { class: 'inp', rows: 5, 'aria-label': t('varWords'), spellcheck: false, placeholder: 'Enel\nDigi\nOrange',
       oninput: (e) => { x.words = e.target.value.split('\n').map((w) => w.trim()).filter(Boolean); markDirty(); schedulePreview(); } });
     ta.value = (x.words || []).join('\n');
-    what = h('div', {}, h('label', { class: 'lbl' }, t('varWords'), ta), h('p', { class: 'hint' }, t('varWordsHelp')));
-  } else if (x.kind === 'pattern') {
-    what = h('div', {},
-      h('label', { class: 'lbl' }, t('varPattern'), textInput(x.pattern ?? '', upd('pattern'), t('varPattern'), { placeholder: 'INV-####', class: 'inp mono' })),
-      h('p', { class: 'hint' }, t('varPatternHelp')));
-  } else {
-    what = h('div', {},
-      h('label', { class: 'lbl' }, t('varRegex'), textInput(x.regex ?? '', upd('regex'), t('varRegex'), { placeholder: 'Nr\\.?\\s*(\\d+)', class: 'inp mono' })),
-      h('p', { class: 'hint' }, t('varRegexHelp')));
+    return h('div', {}, h('label', { class: 'lbl' }, t('varWords'), ta), h('p', { class: 'hint' }, t('varWordsHelp')));
   }
+  if (x.kind === 'pattern') {
+    const said = h('p', { class: 'small var-said' });
+    const tellIt = () => { const v = x.pattern || ''; said.textContent = v ? t('patSays', { what: describePattern(v) }) : ''; };
+    const input = textInput(x.pattern ?? '', (v) => { upd('pattern')(v); tellIt(); }, t('varPattern'), { placeholder: 'INV-####', class: 'inp mono' });
+    tellIt();
+    return h('div', {},
+      h('label', { class: 'lbl' }, t('varPattern'), input),
+      h('div', { class: 'row wrap var-signs' },
+        PATTERN_SIGNS.map(([sign, key]) => h('button', { type: 'button', class: 'btn small sign', title: t(key), onclick: () => insertAtCaret(input, sign) },
+          h('span', { class: 'mono' }, sign === ' ' ? '␣' : sign), ' ', t(key)))),
+      said,
+      h('p', { class: 'hint' }, t('varPatternHelp')));
+  }
+  return h('div', {},
+    h('label', { class: 'lbl' }, t('varRegex'), textInput(x.regex ?? '', upd('regex'), t('varRegex'), { placeholder: 'Nr\\.?\\s*(\\d+)', class: 'inp mono' })),
+    h('p', { class: 'hint' }, t('varRegexHelp')));
+}
+
+/// Step 3: which match counts.
+function renderVarWhich(d) {
+  const x = d.extract;
+  const upd = (k) => (v) => { x[k] = v; markDirty(); schedulePreview(); };
   const occ = x.occurrence === 'last' ? 'last' : String(x.occurrence || 1);
   const occOpts = [...Array.from({ length: 10 }, (_, i) => [String(i + 1), i === 0 ? t('occFirst') : t('occNth', { n: i + 1 })]), ['last', t('occLast')]];
   if (!occOpts.some(([v]) => v === occ)) occOpts.splice(10, 0, [occ, t('occNth', { n: occ })]);
-  return h('div', {}, what,
-    h('div', { class: 'grid2' },
+  return h('div', {},
+    h('div', { class: 'grid3' },
       h('label', { class: 'lbl' }, t('varOccurrence'),
         select(occOpts, occ, (v) => { x.occurrence = v === 'last' ? 'last' : parseInt(v, 10); markDirty(); schedulePreview(); }, t('varOccurrence'))),
-      h('span')),
-    h('div', { class: 'grid2' },
       h('label', { class: 'lbl' }, t('varBefore'), textInput(x.before ?? '', upd('before'), t('varBefore'), { placeholder: t('varBeforePh') })),
       h('label', { class: 'lbl' }, t('varAfter'), textInput(x.after ?? '', upd('after'), t('varAfter'), { placeholder: t('varAfterPh') }))),
     h('p', { class: 'hint' }, t('varLabelHelp')));
@@ -2812,8 +2907,8 @@ async function runVarPreview() {
   if (S.dictSel !== name) return;
   if (res.error) { out.replaceChildren(h('p', { class: 'err' }, res.error)); return; }
   const head = res.found
-    ? h('p', {}, t('varResult'), ' ', h('strong', { class: 'mono' }, res.value))
-    : h('p', { class: 'muted' }, d.default ? t('varResultDefault', { d: d.default }) : t('varResultNone'));
+    ? h('div', { class: 'var-result ok' }, h('span', { class: 'muted small' }, t('varResult')), h('strong', { class: 'mono' }, res.value))
+    : h('div', { class: 'var-result none' }, d.default ? t('varResultDefault', { d: d.default }) : t('varResultNone'));
   // The text with every match marked; the one used is emphasised.
   const parts = [];
   let at = 0;
@@ -2826,29 +2921,128 @@ async function runVarPreview() {
   parts.push(shown.slice(at));
   out.replaceChildren(...[head,
     res.matches && res.matches.length > 1 ? h('p', { class: 'muted small' }, t('varMatches', { n: res.matches.length })) : null,
-    h('pre', { class: 'var-pv-text' }, parts),
+    d.extract ? h('pre', { class: 'var-pv-text' }, parts) : null,
     text.length > shown.length ? h('p', { class: 'muted small' }, t('varPreviewCut')) : null].filter(Boolean));
 }
 
 function renderVarPreview(name, d) {
   if (S.varPv.name !== name) S.varPv = { name, text: S.varPv.text || '' };
-  const ta = h('textarea', { id: 'var-pv-ta', class: 'inp', rows: 5, spellcheck: false, 'aria-label': t('varPreview'), placeholder: t('varPreviewPh'),
+  const byName = d.field !== 'content';
+  const ta = h('textarea', { id: 'var-pv-ta', class: 'inp', rows: byName ? 2 : 7, spellcheck: false, 'aria-label': t('varPreview'),
+    placeholder: t(byName ? 'varPreviewPhName' : 'varPreviewPh'),
     oninput: (e) => { S.varPv.text = e.target.value; schedulePreview(); } });
   ta.value = S.varPv.text;
   const load = async () => {
     try {
       const path = await TAURI.dialog.open({ multiple: false, title: t('varLoadFile') });
       if (!path) return;
-      S.varPv.text = await invoke('file_text', { path });
+      if (byName) {
+        const file = String(path).split(/[\\/]/).pop();
+        S.varPv.text = d.field === 'name' ? stemOf(file) : d.field === 'extension' ? extOf(file)
+          : d.field === 'folder' ? String(path).slice(0, String(path).length - file.length - 1) : String(path);
+      } else {
+        S.varPv.text = await invoke('file_text', { path });
+      }
       ta.value = S.varPv.text;
       runVarPreview();
     } catch (e) { toast(String(e) === 'no_text' ? t('varNoText') : String(e), true); }
   };
   setTimeout(runVarPreview, 0);
-  return h('section', { class: 'card' },
+  return h('section', { class: 'card var-pv' },
     h('div', { class: 'ch' }, h('span', {}, t('varPreview')),
-      h('button', { type: 'button', class: 'btn small', onclick: load }, t('varLoadFile'))),
-    h('div', { class: 'cbody' }, h('p', { class: 'hint' }, t('varPreviewHelp')), ta, h('div', { id: 'var-pv-out', class: 'var-pv-out' })));
+      h('button', { type: 'button', class: 'btn small', onclick: load }, t(byName ? 'varLoadName' : 'varLoadFile'))),
+    h('div', { class: 'cbody' }, h('p', { class: 'hint' }, t(byName ? 'varPreviewHelpName' : 'varPreviewHelp')), ta,
+      h('div', { id: 'var-pv-out', class: 'var-pv-out' })));
+}
+
+// ---------- variables: ready-made starting points ----------
+const VAR_SAMPLE = {
+  ro: 'FACTURĂ FISCALĂ\nFurnizor: Enel Energie Muntenia SA\nSeria ENL nr. 0045213\nData emiterii: 01.11.2026\nData scadentă: 30.11.2026\nTotal de plată: 245,30 lei',
+  en: 'INVOICE\nSupplier: Enel Energy Ltd\nInvoice no. INV-2026-0042\nIssue date: 1 November 2026\nDue date: November 30, 2026\nTotal due: 245.30 EUR',
+};
+
+function varTemplates() {
+  const en = LANG === 'en';
+  const sample = VAR_SAMPLE[en ? 'en' : 'ro'];
+  const x = (kind, more) => ({ kind, occurrence: 1, before: '', after: '', ...more });
+  const fromText = (extract, dflt = null) => ({ field: 'content', entries: [], default: dflt, extract });
+  return [
+    { id: 'due', name: en ? 'DueDate' : 'DataScadenta', sample,
+      def: fromText(x('date', { format: fmtTok('AAAA-LL-ZZ'), before: en ? 'Due date:' : 'Data scadentă:' })) },
+    { id: 'date', name: en ? 'DocDate' : 'DataDoc', sample, def: fromText(x('date', { format: fmtTok('AAAA-LL') })) },
+    { id: 'number', name: en ? 'InvoiceNo' : 'NrFactura', sample,
+      def: fromText(x('regex', { regex: '\\b(?:nr|no)\\.?\\s*:?\\s*([A-Z]{0,5}[ -]?\\d{3,}[0-9/-]*)' })) },
+    { id: 'supplier', name: en ? 'Supplier' : 'Furnizor', sample,
+      def: fromText(x('words', { words: ['Enel', 'E.ON', 'Engie', 'Digi', 'Orange', 'Vodafone'] }), en ? 'Other' : 'Altii') },
+    { id: 'total', name: en ? 'Total' : 'Total', sample,
+      def: fromText(x('pattern', { pattern: en ? '% EUR' : '% lei' })) },
+    { id: 'year', name: en ? 'Year' : 'An', sample: en ? 'sales_report_2025_final' : 'raport_vanzari_2025_final',
+      def: { field: 'name', entries: [], default: null, extract: x('regex', { regex: '(?:^|[^0-9])((?:19|20)\\d\\d)(?:[^0-9]|$)' }) } },
+    { id: 'type', name: en ? 'FileType' : 'TipFisier', sample: 'pdf',
+      def: { field: 'extension', default: en ? 'Other' : 'Altele', entries: [
+        ['pdf, doc, docx, odt, txt', en ? 'Documents' : 'Documente'], ['jpg, jpeg, png, heic, gif', en ? 'Pictures' : 'Poze'],
+        ['mp4, mkv, avi, mov', en ? 'Videos' : 'Video'], ['zip, rar, 7z', en ? 'Archives' : 'Arhive']] } },
+  ];
+}
+
+/// Asks where a new variable starts from: an example or an empty one of a kind.
+function chooseVarStart() {
+  return new Promise((resolve) => {
+    const root = document.getElementById('modal-root');
+    const done = (v) => { root.replaceChildren(); window.removeEventListener('keydown', onKey, true); resolve(v); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); done(null); } };
+    window.addEventListener('keydown', onKey, true);
+    fill(root, h('div', { class: 'overlay', onclick: (e) => { if (e.target === e.currentTarget) done(null); } },
+      h('div', { class: 'modal var-start', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('varStartTitle') },
+        h('h3', {}, t('varStartTitle')),
+        h('p', { class: 'muted' }, t('varStartHelp')),
+        h('div', { class: 'var-tpls' }, varTemplates().map((tp) => h('button', { type: 'button', class: 'var-tpl', 'data-tpl': tp.id, onclick: () => done({ tpl: tp }) },
+          h('strong', {}, t('tpl_' + tp.id)), h('span', { class: 'muted small' }, t('tpl_' + tp.id + '_d'))))),
+        h('p', { class: 'small var-start-or' }, t('varStartBlank')),
+        h('div', { class: 'row wrap' }, VAR_KINDS_UI.map((k) => h('button', { type: 'button', class: 'btn small', 'data-kind': k, onclick: () => done({ kind: k }) }, t(VAR_KIND_LABEL[k])))),
+        h('div', { class: 'row end' }, h('button', { type: 'button', class: 'btn', onclick: () => done(null) }, t('cancel'))))));
+    const first = root.querySelector('.var-tpl'); if (first) first.focus();
+  });
+}
+
+/// Adds the chosen variable (not yet shown) and returns its name.
+function createVar(choice) {
+  let name, def;
+  if (choice.tpl) {
+    name = uniqueDictName(choice.tpl.name);
+    def = clone(choice.tpl.def);
+    S.varPv = { name, text: choice.tpl.sample };
+  } else {
+    name = uniqueDictName(t('varBlankName'));
+    def = { field: 'extension', entries: [['', '']], default: null };
+    setVarKind(def, choice.kind);
+    S.varPv = { name, text: choice.kind === 'dict' ? '' : (S.varPv.text || '') };
+  }
+  S.doc.dictionaries[name] = def;
+  S.dictSel = name;
+  markDirty();
+  return name;
+}
+
+async function newDict() {
+  const choice = await chooseVarStart();
+  if (!choice) return null;
+  const name = createVar(choice);
+  render();
+  return name;
+}
+
+/// From a rule: makes a variable, lets the rule use it (`use(name)`), then opens it in the
+/// Variables page with a way back to the rule.
+async function newVarFromRule(use) {
+  const sel = S.sel;
+  const choice = await chooseVarStart();
+  if (!choice) return;
+  const name = createVar(choice);
+  use(name);
+  S.varBack = { sel };
+  S.tab = 'vars';
+  render();
 }
 
 // ---------- fila Setări ----------
@@ -3173,6 +3367,7 @@ async function refreshStatus() {
 }
 
 function setTab(tab) {
+  if (tab !== 'vars') S.varBack = null;
   S.tab = tab;
   render();
   if (tab === 'journal') { loadJournal(); loadPending(); }

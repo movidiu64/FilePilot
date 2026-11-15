@@ -62,6 +62,20 @@ fn format_tokens_and_month_names() {
     assert_eq!(timefmt::format(ts, 0, "ăț-AAAA", Lang::Ro), "ăț-2026");
 }
 
+#[test]
+fn english_date_tokens() {
+    let ts = timestamp(2026, 3, 5, 7, 8, 9);
+    assert_eq!(timefmt::format(ts, 0, "YYYY-MM-DD HH-mm-ss", Lang::En), "2026-03-05 07-08-09");
+    assert_eq!(timefmt::format(ts, 0, "DD.MM.YY", Lang::En), "05.03.26");
+    assert_eq!(timefmt::format(ts, 0, "MMMM YYYY", Lang::En), "March 2026");
+    assert_eq!(timefmt::format(ts, 0, "MMMM", Lang::Ro), "martie", "the month name alone");
+    // A Romanian format keeps MM as minutes, as in rules written before.
+    assert_eq!(timefmt::format(ts, 0, "AAAA-LL-ZZ HH-MM", Lang::En), "2026-03-05 07-08");
+    assert_eq!(timefmt::format(ts, 0, "MM", Lang::En), "03", "the month alone");
+    assert_eq!(timefmt::format(ts, 0, "HH-mm", Lang::En), "07-08");
+    assert!(timefmt::english_tokens("YYYY") && !timefmt::english_tokens("AAAA-LL-ZZ HH-MM"));
+}
+
 // ---------- condiții ----------
 
 #[test]

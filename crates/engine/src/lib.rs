@@ -595,12 +595,14 @@ impl Engine {
             // Eșec înainte ca fișierul să fie mutat (blocat de antivirus, unitate lipsă):
             // se reîncearcă mai târziu, cu pauze tot mai lungi.
             // O comandă eșuată nu se repetă singură: poate să nu fie sigur de rulat de două ori.
+            // Neither does a step that could not start (a variable without a value): it would
+            // fail the same way until the file or the rule changes.
             let failed_run = rep
                 .steps
                 .iter()
                 .position(|st| matches!(st, StepStatus::Failed(_)))
                 .is_some_and(|i| matches!(rule.actions.get(i), Some(Action::Run { .. } | Action::Command { .. })));
-            if !rep.ok() && !rep.gone && rep.path == cur.path && !failed_run {
+            if !rep.ok() && !rep.gone && rep.path == cur.path && !failed_run && !rep.permanent {
                 let attempts = self.failures.get(&key).map_or(0, |r| r.attempts) + 1;
                 if let Some(wait) = RETRY_BACKOFF.get(attempts - 1) {
                     let due = rctx.now + wait;

@@ -6,7 +6,8 @@
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use org_core::{safe_name, Action, Conflict, FileMeta, Mode, RenderCtx, Rule, Template};
+
+use org_core::{safe_name, Action, Conflict, FileMeta, Lang, Mode, RenderCtx, Rule, Template, TemplateError};
 use org_fs::{move_file, part_path, remove_empty_parents, unique_path, Fs};
 use org_journal::{Journal, MemJournal, NewEntry, OpKind, Status};
 
@@ -32,6 +33,9 @@ pub struct RunReport {
     pub gone: bool,
     /// Oprită la „Cere confirmare”: indicele pasului de la care se continuă după aprobare.
     pub awaiting: Option<usize>,
+    /// The failed step could not even start (a variable found no value, an invalid name):
+    /// trying again gives the same result until the file or the rule changes.
+    pub permanent: bool,
 }
 
 impl RunReport {
@@ -50,7 +54,40 @@ fn valid_component(s: &str) -> bool {
 }
 
 fn render(t: &Template, meta: &FileMeta, ctx: &RenderCtx<'_>, mode: Mode) -> Result<String, String> {
-    t.render(meta, ctx, mode).map_err(|e| format!("șablon: {e:?}"))
+    t.render(meta, ctx, mode).map_err(|e| template_error(&e, ctx.lang))
+}
+
+/// A template error in words, in the language of the program.
+fn template_error(e: &TemplateError, lang: Lang) -> String {
+    let ro = lang == Lang::Ro;
+    match e {
+        TemplateError::MissingValue(n) if ro => format!(
+            "variabila „{n}” nu a găsit nicio valoare în acest fișier (dă-i o valoare de rezervă sau adaugă condiția „variabila găsește o valoare”)"
+        ),
+        TemplateError::MissingValue(n) => format!(
+            "the variable \"{n}\" found no value in this file (give it a fallback value or add the condition \"variable finds a value\")"
+        ),
+        TemplateError::InvalidVariable(n, why) if ro => format!("variabila „{n}” e scrisă greșit: {why}"),
+        TemplateError::InvalidVariable(n, why) => format!("the variable \"{n}\" is not written correctly: {why}"),
+        TemplateError::UnknownNamed(n) if ro => format!("variabila „{n}” nu există"),
+        TemplateError::UnknownNamed(n) => format!("the variable \"{n}\" does not exist"),
+        other if ro => format!("șablon: {other:?}"),
+        other => format!("template: {other:?}"),
+    }
+}
+
+/// The journal kind of an action, for a step that failed before doing anything.
+fn op_kind(a: &Action) -> OpKind {
+    match a {
+        Action::Copy { .. } => OpKind::Copy,
+        Action::Rename { .. } => OpKind::Rename,
+        Action::ChangeExtension { .. } => OpKind::ChangeExt,
+        Action::Trash { .. } => OpKind::Trash,
+        Action::Delete { .. } => OpKind::Delete,
+        Action::Command { .. } | Action::Run { .. } => OpKind::Run,
+        Action::Extract { .. } => OpKind::Extract,
+        Action::Move { .. } | Action::Confirm => OpKind::Move,
+    }
 }
 
 /// Folderul destinație. O cale relativă („PDF”, „Arhiva\2026”) se socotește față de
@@ -127,9 +164,29 @@ struct Exec<'a> {
     run_id: u64,
     rule_id: u64,
     now: i64,
+    /// Journal entries written so far in this run.
+    written: usize,
 }
 
 impl Exec<'_> {
+    /// Records a step that failed before it could do anything, so the journal (and the
+    /// daemon's error count) shows why the file stayed where it is.
+    fn failed_before(&mut self, kind: OpKind, src: &Path, msg: &str) {
+        let st = self.fs.metadata(src).ok();
+        let id = self.j.begin(NewEntry {
+            run_id: self.run_id,
+            rule_id: self.rule_id,
+            ts: self.now,
+            kind,
+            src: src.to_path_buf(),
+            dst: None,
+            size: st.map_or(0, |s| s.size),
+            mtime: st.map_or(0, |s| s.modified),
+        });
+        self.j.finish(id, Status::Failed(msg.to_string()));
+        self.written += 1;
+    }
+
     /// Înregistrează, execută, închide. Întoarce rezultatul operației.
     fn journaled(
         &mut self,
@@ -139,6 +196,7 @@ impl Exec<'_> {
         op: impl FnOnce(&mut dyn Fs) -> io::Result<()>,
     ) -> Result<(), String> {
         let st = self.fs.metadata(src).ok();
+        self.written += 1;
         let id = self.j.begin(NewEntry {
             run_id: self.run_id,
             rule_id: self.rule_id,
@@ -287,8 +345,8 @@ pub fn run_rule_from(
     let run_id = journal.next_run_id();
     let rel = meta.relative_parent();
     let mut cur = meta.clone();
-    let mut report = RunReport { run_id, steps: Vec::new(), path: cur.path.clone(), gone: false, awaiting: None };
-    let mut ex = Exec { fs, j: journal, run_id, rule_id: rule.id, now: rctx.now };
+    let mut report = RunReport { run_id, steps: Vec::new(), path: cur.path.clone(), gone: false, awaiting: None, permanent: false };
+    let mut ex = Exec { fs, j: journal, run_id, rule_id: rule.id, now: rctx.now, written: 0 };
 
     for (i, action) in rule.actions.iter().enumerate().skip(start) {
         if matches!(action, Action::Confirm) {
@@ -296,8 +354,13 @@ pub fn run_rule_from(
             report.awaiting = Some(i + 1);
             break;
         }
+        let before = ex.written;
         let r = step(&mut ex, action, &mut cur, rel.as_deref(), rctx);
         let failed = matches!(r, StepStatus::Failed(_));
+        if let (StepStatus::Failed(msg), true) = (&r, ex.written == before) {
+            ex.failed_before(op_kind(action), &cur.path, msg);
+            report.permanent = true;
+        }
         let dedup = r == StepStatus::Deduplicated;
         if (matches!(action, Action::Trash { .. } | Action::Delete { .. }) && !failed) || dedup {
             report.gone = true;

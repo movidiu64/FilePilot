@@ -81,7 +81,7 @@ Conditions with *older than N days* are re-checked hourly, so files that grow ol
 |---|---|
 | Move file | Moves the file to a folder, created if missing. *Keep subfolder structure* recreates the subfolders of the watched folder at the destination. *Remove folder if empty* deletes the folder the file came from if it is now empty, and empty parents up to (not including) the watched folder. |
 | Copy file | Copies the file. *Following actions work on the copy* makes the next actions apply to the copy instead of the original. |
-| Rename file | Changes the name, not the extension; usually with variables, e.g. `{name}_{created:AAAA-LL-ZZ}`. |
+| Rename file | Changes the name, not the extension; usually with variables, e.g. `{name}_{created:YYYY-MM-DD}`. |
 | Change extension | Changes only the extension. The content is not converted. |
 | Send to Recycle Bin | Recoverable from the Recycle Bin and from the journal. Use this while testing a rule. |
 | Delete permanently | Cannot be undone. |
@@ -97,7 +97,7 @@ Conditions with *older than N days* are re-checked hourly, so files that grow ol
 - *Overwrite the existing file*: the existing file goes to the Recycle Bin first, so this can be undone too.
 - *Identical copy → Recycle Bin*: if the file at the destination has exactly the same content, the new one goes to the Recycle Bin; otherwise it is renamed.
 
-**Destinations.** A relative destination (`PDF\{modified:AAAA}`) is relative to the watched folder. `{folder}` or `{path}` at the start of a destination means next to the file (`{folder}\PDF`); in the middle it reproduces the file's folder as a branch (`D:\Backup\{folder}` → `D:\Backup\C\Users\…`). Names Windows refuses (`CON`, `NUL`, `COM1`…, a trailing dot or space, more than 255 characters) are corrected before a move or rename.
+**Destinations.** A relative destination (`PDF\{modified:YYYY}`) is relative to the watched folder. `{folder}` or `{path}` at the start of a destination means next to the file (`{folder}\PDF`); in the middle it reproduces the file's folder as a branch (`D:\Backup\{folder}` → `D:\Backup\C\Users\…`). Names Windows refuses (`CON`, `NUL`, `COM1`…, a trailing dot or space, more than 255 characters) are corrected before a move or rename.
 
 > [!WARNING]
 > A *Run a program* action with `{path}` as the program would start the very file the rule found. The editor warns about it: use a program that only reads the file (an antivirus, an archiver), or restrict the rule to safe extensions.
@@ -130,11 +130,22 @@ Variables can be used in destinations, names, arguments and commands. The **{ } 
 | `{created:FORMAT}`, `{modified:FORMAT}`, `{now:FORMAT}` | date created, date modified, today |
 | `{var:Name}` | one of your variables (below) |
 
-Date formats use these tokens (the picker inserts them for you): `AAAA` year, `AA` two-digit year, `LL` month, `LLLL` month name (in the interface language), `ZZ` day, `HH` hour, `MM` minute, `SS` second. Any other character is kept, so `{modified:AAAA-LL-ZZ}` gives `2026-11-15` and `{created:AAAA}\{created:LL}` gives the subfolders `2026\11`. To write a literal brace, double it: `{{` and `}}`.
+Date formats use one of two sets of tokens (the picker inserts them for you, in the interface language):
+
+| | Year | Two-digit year | Month | Month name | Day | Hour | Minute | Second |
+|---|---|---|---|---|---|---|---|---|
+| English | `YYYY` | `YY` | `MM` | `MMMM` | `DD` | `HH` | `mm` | `ss` |
+| Romanian | `AAAA` | `AA` | `LL` | `LLLL` | `ZZ` | `HH` | `MM` | `SS` |
+
+A format uses one set or the other: `MM` is the month in an English format and the minute in a Romanian one (a format with `YY`, `DD`, `MMMM`, `mm` or `ss`, or just `MM`, is English). Month names follow the interface language. Any other character is kept, so `{modified:YYYY-MM-DD}` gives `2026-11-15` and `{created:YYYY}\{created:MM}` gives the subfolders `2026\11`. To write a literal brace, double it: `{{` and `}}`.
 
 ### Your variables
 
-The **Variables** tab holds variables you define once and use in any rule, as `{var:Name}` in a destination, name or command, or in a **Variable** condition (*finds a value* / *finds nothing*). Each one searches a field (the file's text, its name, extension, path or folder) and is of one of these types:
+The **Variables** tab holds variables you define once and use in any rule, as `{var:Name}` in a destination, name or command, or in a **Variable** condition (*finds a value* / *finds nothing*).
+
+**New variable** starts from a ready-made example (due date of an invoice, first date in the document, invoice number, supplier, total due, year from the file name, file type) that comes with a sample document, so the preview shows the result right away; or from an empty variable of a chosen type. In a rule, the **{ } Variable** menu and the **Variable** condition also offer **+ New variable…**: the variable is put in the rule and opened in the Variables tab, with a button back to the rule.
+
+The editor has numbered steps, with the preview beside them: **what it looks for** (the type and its settings), **where it looks** (the file's text, its name, extension, path or folder), **which match counts** and **if nothing is found**. The types:
 
 | Type | Value | Example |
 |---|---|---|
@@ -146,15 +157,15 @@ The **Variables** tab holds variables you define once and use in any rule, as `{
 
 The types other than *Dictionary* also have:
 
-- **Which occurrence**: the first, the second… or the last value found.
-- **Text right before / after** (optional): only values next to that text count, with any spaces in between. With *Text right before* `Due date:` a date variable takes the due date, not the issue date.
-- **Preview**: paste a document's text or load a file to see every value found; the one used is highlighted.
+- **Which match**: the first, the second… or the last value found.
+- **Written right before / after** (optional): only values next to that text count, with any spaces in between. With `Due date:` before it, a date variable takes the due date, not the issue date.
+- **Preview**: paste a document's text or load a file to see every value found; the one used is highlighted. For a variable that looks in the name or path, type a file name or choose a file.
 
-Pattern signs: `#` a digit, `@` a letter, `?` any character, `%` a number (`1234`, `1.234,56`), `*` any text on the same line (as little as possible, so put something after it), a space for any whitespace; `\` before a sign takes it literally (`\#`). Regular expressions support classes, groups, alternatives, `^ $ \b` and repetitions, ignore letter case and run in time proportional to the text, so a rule never hangs on one; backreferences and lookarounds are not supported. Day-first dates are assumed (`05/03/2026` is 5 March) unless only month-first makes a valid date (`11/25/2026`).
+Pattern signs (the editor has a button for each and says the pattern in words, e.g. *“INV-” + 4 digits*): `#` a digit, `@` a letter, `?` any character, `%` a number (`1234`, `1.234,56`), `*` any text on the same line (as little as possible, so put something after it), a space for any whitespace; `\` before a sign takes it literally (`\#`). Regular expressions support classes, groups, alternatives, `^ $ \b` and repetitions, ignore letter case and run in time proportional to the text, so a rule never hangs on one; backreferences and lookarounds are not supported. Day-first dates are assumed (`05/03/2026` is 5 March) unless only month-first makes a valid date (`11/25/2026`).
 
-If a variable finds nothing and has no default value, actions that use it do not run for that file. For variables that search the file's text, the text is read once per file for all rules, and the result of a **Variable** condition is remembered for each version of the file, like content conditions. Variables can be imported, exported and edited as JSON.
+If a variable finds nothing and has no fallback value, the actions that use it do not run for that file: the file stays where it is, and the journal records the step as failed with the reason (*the variable “Due” found no value in this file*). Such a file is not tried again until it changes. To leave these files alone quietly, put the condition *Variable … finds a value* in the rule. For variables that search the file's text, the text is read once per file for all rules, and the result of a **Variable** condition is remembered for each version of the file, like content conditions. Variables can be imported, exported and edited as JSON.
 
-Example: invoices filed by supplier and month. *Supplier* is a word-from-a-list variable (`Enel`, `Digi`, `E.ON`, default `Other`) and *Due* a date variable with format `AAAA-LL` and *Text right before* `Data scadentă:`; the rule's condition is *Variable Due finds a value* and its action *Move to* `D:\Invoices\{var:Supplier}\{var:Due}`.
+Example: invoices filed by supplier and month. *Supplier* is a word-from-a-list variable (`Enel`, `Digi`, `E.ON`, default `Other`) and *Due* a date variable with format `YYYY-MM` and `Due date:` written right before it; the rule's condition is *Variable Due finds a value* and its action *Move to* `D:\Invoices\{var:Supplier}\{var:Due}`.
 
 ## Duplicates
 

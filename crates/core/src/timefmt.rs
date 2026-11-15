@@ -75,25 +75,48 @@ pub fn month_name(month: u32, lang: Lang) -> &'static str {
 /// `HH` ora, `MM` minutul, `SS` secunda. Orice alt caracter rămâne neschimbat.
 pub fn format(ts: i64, utc_offset: i64, fmt: &str, lang: Lang) -> String {
     let c = civil(ts, utc_offset);
+    let en = english_tokens(fmt);
     let mut out = String::with_capacity(fmt.len() + 8);
     let mut i = 0;
     while i < fmt.len() {
         let rest = &fmt[i..];
-        let (text, len) = if rest.starts_with("AAAA") {
+        let tok = |t: &str| rest.starts_with(t);
+        let (text, len) = if en {
+            if tok("YYYY") {
+                (format!("{:04}", c.year), 4)
+            } else if tok("YY") {
+                (format!("{:02}", c.year.rem_euclid(100)), 2)
+            } else if tok("MMMM") {
+                (month_name(c.month, lang).to_string(), 4)
+            } else if tok("MM") {
+                (format!("{:02}", c.month), 2)
+            } else if tok("DD") {
+                (format!("{:02}", c.day), 2)
+            } else if tok("HH") {
+                (format!("{:02}", c.hour), 2)
+            } else if tok("mm") {
+                (format!("{:02}", c.min), 2)
+            } else if tok("ss") {
+                (format!("{:02}", c.sec), 2)
+            } else {
+                let ch = rest.chars().next().unwrap();
+                (ch.to_string(), ch.len_utf8())
+            }
+        } else if tok("AAAA") {
             (format!("{:04}", c.year), 4)
-        } else if rest.starts_with("AA") {
+        } else if tok("AA") {
             (format!("{:02}", c.year.rem_euclid(100)), 2)
-        } else if rest.starts_with("LLLL") {
+        } else if tok("LLLL") {
             (month_name(c.month, lang).to_string(), 4)
-        } else if rest.starts_with("LL") {
+        } else if tok("LL") {
             (format!("{:02}", c.month), 2)
-        } else if rest.starts_with("ZZ") {
+        } else if tok("ZZ") {
             (format!("{:02}", c.day), 2)
-        } else if rest.starts_with("HH") {
+        } else if tok("HH") {
             (format!("{:02}", c.hour), 2)
-        } else if rest.starts_with("MM") {
+        } else if tok("MM") {
             (format!("{:02}", c.min), 2)
-        } else if rest.starts_with("SS") {
+        } else if tok("SS") {
             (format!("{:02}", c.sec), 2)
         } else {
             let ch = rest.chars().next().unwrap();
@@ -103,4 +126,12 @@ pub fn format(ts: i64, utc_offset: i64, fmt: &str, lang: Lang) -> String {
         i += len;
     }
     out
+}
+
+/// Whether a format uses the English tokens (`YYYY-MM-DD HH-mm-ss`, `MMMM YYYY`) instead of
+/// the Romanian ones (`AAAA-LL-ZZ HH-MM-SS`, `LLLL AAAA`). The two cannot be mixed: `MM` is
+/// the month in an English format and the minutes in a Romanian one, as it always was. A
+/// format that is only `MM` is the month (the minutes alone are of no use in a name).
+pub fn english_tokens(fmt: &str) -> bool {
+    ["YY", "DD", "MMMM", "mm", "ss"].iter().any(|t| fmt.contains(t)) || fmt.trim() == "MM"
 }

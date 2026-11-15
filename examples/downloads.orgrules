@@ -33,7 +33,7 @@
         ]
       },
       "actions": [
-        { "type": "move", "dest": "Invoices\\{modified:AAAA}\\{modified:LL}", "conflict": "rename" }
+        { "type": "move", "dest": "Invoices\\{modified:YYYY}\\{modified:MM}", "conflict": "rename" }
       ]
     },
     {
