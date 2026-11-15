@@ -3,7 +3,7 @@
 All notable changes to FilePilot are listed here. Versions follow [Semantic Versioning](https://semver.org/):
 a new major version may need you to review your rules, minor versions add features, patches fix bugs.
 
-## [Unreleased]
+## [1.2.0] - 2026-11-15
 
 ### Added
 - **Variables that take values from the text**: a date (in the usual Romanian and English forms, written in your format), a word from a list, a simple pattern (`INV-####`) or a regular expression; the first, n-th or last occurrence; optionally only next to a label (`Total:`). Use them in destinations and names as `{var:Name}`.

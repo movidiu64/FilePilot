@@ -2642,7 +2642,7 @@ dependencies = [
 
 [[package]]
 name = "org-actions"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "org-core",
  "org-fs",
@@ -2651,7 +2651,7 @@ dependencies = [
 
 [[package]]
 name = "org-app"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "chrono",
  "org-actions",
@@ -2672,11 +2672,11 @@ dependencies = [
 
 [[package]]
 name = "org-core"
-version = "1.1.0"
+version = "1.2.0"
 
 [[package]]
 name = "org-daemon"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "chrono",
  "notify",
@@ -2694,7 +2694,7 @@ dependencies = [
 
 [[package]]
 name = "org-engine"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "org-actions",
  "org-core",
@@ -2704,29 +2704,29 @@ dependencies = [
 
 [[package]]
 name = "org-fs"
-version = "1.1.0"
+version = "1.2.0"
 
 [[package]]
 name = "org-journal"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "org-fs",
 ]
 
 [[package]]
 name = "org-paths"
-version = "1.1.0"
+version = "1.2.0"
 
 [[package]]
 name = "org-portable"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "org-core",
 ]
 
 [[package]]
 name = "org-store"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "org-actions",
  "org-core",
@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "org-sysfs"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "org-fs",
  "trash",
