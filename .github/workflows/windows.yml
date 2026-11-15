@@ -1,0 +1,196 @@
+# Windows build: tests, release build, the NSIS installer and an automated install test on
+# every push. When main carries a version (Cargo.toml = tauri.conf.json) that has no release
+# yet, the build creates the v<version> tag and publishes the installer and a portable ZIP.
+# Pushing a v* tag by hand does the same.
+name: Windows
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # publishing releases
+    env:
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: ver
+        run: |
+          $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $tauri = (Get-Content crates/app/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($cargo -ne $tauri) { Write-Host "::error::Cargo.toml has $cargo, tauri.conf.json has $tauri"; exit 1 }
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne "v$cargo") {
+            Write-Host "::error::tag ${{ github.ref_name }} does not match version $cargo"; exit 1
+          }
+          "version=$cargo" >> $env:GITHUB_OUTPUT
+          Write-Host "FilePilot $cargo"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tests
+        run: cargo test --workspace --no-fail-fast
+
+      - name: Clippy (informational)
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets
+
+      - name: Dependency licenses (informational)
+        continue-on-error: true
+        run: |
+          # FilePilot is GPL-3.0-only: list the licenses of everything linked into it.
+          $meta = cargo metadata --format-version 1 --locked | ConvertFrom-Json
+          $meta.packages | Where-Object { $_.source } | Group-Object license | Sort-Object Count -Descending |
+            Format-Table Count, Name -AutoSize | Out-String -Width 200 | Write-Host
+
+      - name: Release build
+        run: cargo build --release --workspace
+
+      # tauri.conf.json + tauri.bundle.json: the daemon as an external binary, the steps in
+      # windows/hooks.nsh, Romanian and English. Output: FilePilot_<version>_x64-setup.exe.
+      - name: Installer (NSIS)
+        working-directory: crates/app
+        run: |
+          New-Item -ItemType Directory -Force binaries | Out-Null
+          Copy-Item ../../target/release/filepilot.exe binaries/filepilot-x86_64-pc-windows-msvc.exe
+          npx --yes @tauri-apps/cli@2 build --config tauri.bundle.json --bundles nsis
+          Get-ChildItem ../../target/release/bundle/nsis | Format-Table Name, Length
+
+      # Silent install (/S): upgrade from the former "Organizator", update with the daemon
+      # running, uninstall.
+      - name: Installer test
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1).FullName
+          $dir = Join-Path $env:LOCALAPPDATA 'FilePilot'
+          $legacyDir = Join-Path $env:LOCALAPPDATA 'Organizator'
+          $data = Join-Path $env:APPDATA 'FilePilot'
+          $legacyData = Join-Path $env:APPDATA 'Organizator'
+          $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          $uninst = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+          function RunValue($name) { (Get-ItemProperty $run -ErrorAction SilentlyContinue).$name }
+          function Proc($name) { Get-Process $name -ErrorAction SilentlyContinue }
+          # Only the process itself: `Start-Process -Wait` also waits for children (the restarted daemon).
+          function RunWait($exe, $arg) {
+            $p = Start-Process $exe -ArgumentList $arg -PassThru
+            if (-not $p.WaitForExit(180000)) { throw "$exe $arg did not finish within 3 minutes" }
+          }
+          function WaitFor($what, [scriptblock]$cond, $secs = 30) {
+            $t = 0
+            while (-not (& $cond) -and $t -lt $secs) { Start-Sleep -Seconds 1; $t++ }
+            if (-not (& $cond)) { throw "timed out waiting for: $what" }
+          }
+
+          # 1. Upgrade from Organizator 0.1.0 with its daemon running and autostart on.
+          gh release download v0.1.0 --pattern '*-setup.exe' --dir legacy
+          if ($LASTEXITCODE -eq 0) {
+            RunWait (Get-ChildItem legacy/*-setup.exe).FullName '/S'
+            New-ItemProperty -Path $run -Name Organizator -Value ('"' + "$legacyDir\organizator.exe" + '"') -PropertyType String -Force | Out-Null
+            New-Item -ItemType Directory -Force $legacyData | Out-Null
+            Set-Content (Join-Path $legacyData 'marker.txt') 'user data'
+            Start-Process "$legacyDir\organizator.exe" -ArgumentList '--no-tray'
+            WaitFor 'legacy daemon' { Proc organizator }
+            RunWait $setup '/S'
+            if (Test-Path "$legacyDir\organizator.exe") { throw 'upgrade: the Organizator install is still there' }
+            if (Test-Path "$uninst\Organizator") { throw 'upgrade: Organizator is still in Installed apps' }
+            if (RunValue 'Organizator') { throw 'upgrade: the old autostart value is still there' }
+            if ((RunValue 'FilePilot') -ne ('"' + "$dir\filepilot.exe" + '"')) { throw "upgrade: autostart is $(RunValue 'FilePilot')" }
+            if (Proc organizator) { throw 'upgrade: the old daemon is still running' }
+            # The restarted daemon moves the data folder on start.
+            if (-not (Proc filepilot)) { Start-Process "$dir\filepilot.exe" -ArgumentList '--no-tray' }
+            WaitFor 'data moved to %APPDATA%\FilePilot' { Test-Path (Join-Path $data 'marker.txt') }
+            if (Test-Path $legacyData) { throw 'upgrade: %APPDATA%\Organizator is still there' }
+            Write-Host 'upgrade from Organizator 0.1.0: ok'
+          } else {
+            Write-Warning 'v0.1.0 not found: skipping the upgrade test'
+            $global:LASTEXITCODE = 0 # the failed download must not fail the step
+            RunWait $setup '/S'
+          }
+
+          # 2. Fresh state checks.
+          foreach ($f in 'filepilot.exe', 'filepilot-ui.exe', 'uninstall.exe') {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "install: $f is missing" }
+          }
+          if (-not (Test-Path "$uninst\FilePilot")) { throw 'install: not in Installed apps' }
+
+          # 3. Update with the daemon running: stopped, replaced, started again.
+          if (-not (Proc filepilot)) { Start-Process "$dir\filepilot.exe" -ArgumentList '--no-tray' }
+          WaitFor 'daemon' { Proc filepilot }
+          $before = (Proc filepilot).Id
+          RunWait $setup '/S'
+          Start-Sleep -Seconds 3
+          $after = Proc filepilot
+          if ($after -and ($after.Id -contains $before)) { throw 'update: the old daemon is still running' }
+          if ($after) { Write-Host "update: daemon restarted (pid $($after.Id))" }
+          else { Write-Warning 'update: the daemon was not restarted (no tray on the runner?)' }
+
+          # 4. Uninstall: files, Installed apps entry and autostart go; the data stays.
+          RunWait (Join-Path $dir 'uninstall.exe') '/S'
+          # uninstall.exe copies itself to %TEMP% and returns at once: wait for the result.
+          WaitFor 'uninstall' { -not (Test-Path "$uninst\FilePilot") -and -not (Test-Path "$dir\filepilot.exe") -and -not (RunValue 'FilePilot') } 60
+          if (Test-Path "$dir\filepilot-ui.exe") { throw 'uninstall: the window executable is still there' }
+          if (Proc filepilot) { throw 'uninstall: the daemon is still running' }
+          if (-not (Test-Path $data)) { throw 'uninstall: the data was deleted without being asked to' }
+          Write-Host 'install, upgrade, update and uninstall: ok'
+          exit 0
+
+      - name: Package
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          New-Item -ItemType Directory -Force out, portable | Out-Null
+          Copy-Item target/release/filepilot.exe, target/release/filepilot-ui.exe, README.md, CHANGELOG.md, LICENSE portable/
+          Compress-Archive -Path portable/* -DestinationPath "out/FilePilot-$v-portable.zip"
+          Copy-Item target/release/bundle/nsis/*-setup.exe out/
+          Get-ChildItem out | Format-Table Name, Length
+
+      # Artifacts count against the account's shared storage: keep them briefly. Releases stay.
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: FilePilot-windows
+          path: out/
+          retention-days: 2
+          compression-level: 9
+
+      # Builds of other branches go to a single draft release, replaced each time: drafts are
+      # visible only to the repository's owner and, unlike artifacts, do not use Actions storage.
+      - name: Test build (draft release)
+        if: github.event_name == 'push' && github.ref_type == 'branch' && github.ref != 'refs/heads/main'
+        run: |
+          $old = gh api "repos/${{ github.repository }}/releases?per_page=100" --jq '.[] | select(.draft and .name == "Test build") | .id'
+          foreach ($id in $old) { gh api -X DELETE "repos/${{ github.repository }}/releases/$id" | Out-Null }
+          $notes = "Branch ``${{ github.ref_name }}`` at ${{ github.sha }}. For testing only; the next test build replaces it."
+          gh release create "test-build" (Get-ChildItem out/*).FullName --draft --target "${{ github.sha }}" --title "Test build" --notes $notes
+
+      - name: Release
+        if: github.ref_type == 'tag' || github.ref == 'refs/heads/main'
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          gh release view "v$v" *> $null
+          if ($LASTEXITCODE -eq 0) { Write-Host "v$v is already released"; exit 0 }
+          $global:LASTEXITCODE = 0
+          # The changelog section of this version becomes the release notes.
+          $text = Get-Content CHANGELOG.md -Raw
+          $m = [regex]::Match($text, "(?ms)^## \[?$([regex]::Escape($v))\]?[^\n]*\n(.*?)(?=^## |\z)")
+          if (-not $m.Success) { Write-Host "::error::CHANGELOG.md has no section for $v"; exit 1 }
+          $notes = $m.Groups[1].Value.Trim()
+          $notes += "`n`n**Install:** download ``FilePilot_${v}_x64-setup.exe`` (Windows 10/11, 64-bit, no admin rights needed). A portable ZIP is also attached."
+          Set-Content notes.md $notes
+          # gh creates the tag on this commit when it does not exist yet.
+          gh release create "v$v" (Get-ChildItem out/*).FullName --target "${{ github.sha }}" --title "FilePilot $v" --notes-file notes.md

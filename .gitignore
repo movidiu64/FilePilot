@@ -1,0 +1,15 @@
+# Build Rust
+/target/
+
+# Fișiere generate de Tauri la compilare
+/crates/app/gen/
+
+# Date locale (baze de date de test, fișiere temporare)
+*.db
+*.db-wal
+*.db-shm
+*.orgrules.tmp
+
+# Daemonul copiat pentru instalator (vezi .github/workflows/windows.yml)
+/crates/app/binaries/
+/dist/

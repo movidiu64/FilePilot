@@ -1,0 +1,26 @@
+{
+  "mainBinaryName": "filepilot-ui",
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "movidiu64",
+    "shortDescription": "Automatic file organizer for Windows",
+    "longDescription": "Watches the folders you choose and applies if-then rules: sorts, renames, archives and finds duplicate files.",
+    "externalBin": ["binaries/filepilot"],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["Romanian", "English"],
+        "customLanguageFiles": {
+          "Romanian": "windows/Romanian.nsh",
+          "English": "windows/English.nsh"
+        },
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "installerHooks": "windows/hooks.nsh",
+        "compression": "lzma"
+      }
+    }
+  }
+}

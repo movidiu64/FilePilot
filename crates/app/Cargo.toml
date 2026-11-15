@@ -1,0 +1,34 @@
+[package]
+name = "org-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "filepilot-ui"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+org-core = { path = "../core" }
+org-fs = { path = "../fs" }
+org-journal = { path = "../journal" }
+org-engine = { path = "../engine" }
+org-portable = { path = "../portable" }
+org-store = { path = "../store" }
+org-sysfs = { path = "../sysfs" }
+org-paths = { path = "../paths" }
+org-actions = { path = "../actions" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[features]
+# Încorporează interfața în executabil; cu `cargo run` fereastra funcționează fără alte unelte.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

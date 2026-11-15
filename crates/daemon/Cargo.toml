@@ -1,0 +1,26 @@
+[package]
+name = "org-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "filepilot"
+path = "src/main.rs"
+
+[dependencies]
+org-core = { path = "../core" }
+org-fs = { path = "../fs" }
+org-sysfs = { path = "../sysfs" }
+org-paths = { path = "../paths" }
+org-journal = { path = "../journal" }
+org-engine = { path = "../engine" }
+org-portable = { path = "../portable" }
+org-store = { path = "../store" }
+notify = "6"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[target.'cfg(windows)'.dependencies]
+tray-icon = "0.19"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }

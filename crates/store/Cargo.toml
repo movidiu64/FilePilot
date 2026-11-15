@@ -1,0 +1,16 @@
+[package]
+name = "org-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+org-fs = { path = "../fs" }
+org-journal = { path = "../journal" }
+org-engine = { path = "../engine" }
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+[dev-dependencies]
+org-core = { path = "../core" }
+org-actions = { path = "../actions" }

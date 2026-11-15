@@ -1,0 +1,20 @@
+[workspace]
+members = ["crates/core", "crates/fs", "crates/journal", "crates/actions", "crates/engine", "crates/portable", "crates/daemon", "crates/store", "crates/sysfs", "crates/paths", "crates/content", "crates/app"]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.89"
+license = "GPL-3.0-only"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# The hidden-rules password (PBKDF2, 100,000 iterations) would take seconds in an unoptimized dev build.
+[profile.dev.package.org-core]
+opt-level = 3

@@ -1,0 +1,13 @@
+[package]
+name = "org-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+org-core = { path = "../core" }
+org-fs = { path = "../fs" }
+org-journal = { path = "../journal" }
+org-actions = { path = "../actions" }
+org-content = { path = "../content" }

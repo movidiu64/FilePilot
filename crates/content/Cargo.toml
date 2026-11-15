@@ -1,0 +1,9 @@
+[package]
+name = "org-content"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Textul din fișiere (text, DOCX, XLSX, ODT, PDF) pentru condițiile pe conținut; fără dependențe."
+
+[dependencies]
