@@ -39,7 +39,7 @@ fn extract(dest: &str, conflict: Conflict) -> Action {
 const NOW: (i64, u32, u32) = (2026, 11, 15);
 
 fn ctx(d: &HashMap<String, Dictionary>) -> RenderCtx<'_> {
-    RenderCtx { now: timestamp(NOW.0, NOW.1, NOW.2, 12, 0, 0), tz: Tz::Fixed(0), lang: Lang::En, dicts: d, content: None }
+    RenderCtx { now: timestamp(NOW.0, NOW.1, NOW.2, 12, 0, 0), tz: Tz::Fixed(0), lang: Lang::En, dicts: d, content: None, raw: None }
 }
 
 fn meta(fs: &MemFs, path: &str) -> FileMeta {

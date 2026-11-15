@@ -355,7 +355,7 @@ impl State {
 
     /// Răspunsul din fereastră la confirmări: aprobat (pașii rămași rulează) sau respins.
     fn answer(&mut self, ids: &[u64], approve: bool) {
-        let rc = RenderCtx { now: now_ts(), tz: Tz::At(offset_at), lang: self.lang, dicts: &self.dicts, content: None };
+        let rc = RenderCtx::new(now_ts(), Tz::At(offset_at), self.lang, &self.dicts);
         for p in self.journal.pending().iter().filter(|p| ids.contains(&p.id)) {
             println!(
                 "[confirmare] {} „{}”: {}",
@@ -378,7 +378,7 @@ impl State {
 
     /// Scanare completă; întoarce fișierele care așteaptă și peste câte secunde să fie reluate.
     fn scan(&mut self) -> Vec<(PathBuf, i64)> {
-        let rc = RenderCtx { now: now_ts(), tz: Tz::At(offset_at), lang: self.lang, dicts: &self.dicts, content: None };
+        let rc = RenderCtx::new(now_ts(), Tz::At(offset_at), self.lang, &self.dicts);
         // Progresul, pentru fereastră: doar la scanările care durează (cel mult de ~2 ori pe secundă).
         let (path, mut shown) = (self.status_path.clone(), self.status.clone());
         let started = now_ts();
@@ -411,7 +411,7 @@ impl State {
         if !path.is_file() {
             return None;
         }
-        let rc = RenderCtx { now: now_ts(), tz: Tz::At(offset_at), lang: self.lang, dicts: &self.dicts, content: None };
+        let rc = RenderCtx::new(now_ts(), Tz::At(offset_at), self.lang, &self.dicts);
         let out = self.engine.process_path(&mut self.fs, &mut self.journal, &rc, path, &root);
         self.after();
         match out {

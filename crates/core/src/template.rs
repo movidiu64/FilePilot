@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::condition::TextField;
+use crate::extract::{Extract, Extractor};
 use crate::meta::FileMeta;
 use crate::timefmt::{self, Lang};
 
@@ -52,6 +53,38 @@ pub struct Dictionary {
     pub field: TextField,
     pub entries: Vec<(String, String)>,
     pub default: Option<String>,
+    /// With `extract`, the variable takes its value from the text itself (a date, a word
+    /// from a list, a pattern…) instead of from `entries`.
+    pub extract: Option<Extract>,
+}
+
+impl Dictionary {
+    /// The value for a file, if the variable finds one (the default value is not used).
+    /// `text` is the searched field in its original case (the file's text for `Content`).
+    pub fn lookup(&self, text: &str, lang: crate::timefmt::Lang) -> Result<Option<String>, String> {
+        match &self.extract {
+            Some(ex) => Ok(Extractor::new(ex, lang).map_err(|e| e.to_string())?.find(text)),
+            None => {
+                // A key may list several variants separated by commas: "pdf, doc, docx".
+                let hay = text.to_lowercase();
+                Ok(self
+                    .entries
+                    .iter()
+                    .find(|(k, _)| k.split(',').map(str::trim).any(|k| !k.is_empty() && hay.contains(&k.to_lowercase())))
+                    .map(|(_, v)| v.clone()))
+            }
+        }
+    }
+
+    /// A stable key for remembering whether this variable is found in a file's text.
+    pub fn content_key(&self) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in format!("v1{self:?}").bytes() {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        h
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +95,8 @@ pub enum TemplateError {
     UnknownNamed(String),
     /// Dicționarul nu are intrare potrivită și nici valoare implicită.
     MissingValue(String),
+    /// The variable's own definition is invalid (e.g. a bad regular expression).
+    InvalidVariable(String, String),
 }
 
 /// Cum se tratează valorile variabilelor la randare.
@@ -111,11 +146,13 @@ pub struct RenderCtx<'a> {
     /// Textul fișierului (în minuscule), pentru dicționarele care caută în conținut;
     /// îl pune motorul doar când o regulă are nevoie de el.
     pub content: Option<Arc<str>>,
+    /// The same text in its original case, for variables that copy a value out of it.
+    pub raw: Option<Arc<str>>,
 }
 
 impl<'a> RenderCtx<'a> {
     pub fn new(now: i64, tz: Tz, lang: Lang, dicts: &'a HashMap<String, Dictionary>) -> Self {
-        RenderCtx { now, tz, lang, dicts, content: None }
+        RenderCtx { now, tz, lang, dicts, content: None, raw: None }
     }
 }
 
@@ -290,6 +327,20 @@ fn resolve(v: &Var, meta: &FileMeta, ctx: &RenderCtx<'_>) -> Result<String, Temp
                 DateSrc::Now => ctx.now,
             };
             timefmt::format(ts, ctx.tz.offset_at(ts), fmt, ctx.lang)
+        }
+        Var::Named(name) if ctx.dicts.get(name).is_some_and(|d| d.extract.is_some()) => {
+            let dict = &ctx.dicts[name];
+            let text: Cow<str> = match dict.field {
+                TextField::Content => Cow::Borrowed(ctx.raw.as_deref().or(ctx.content.as_deref()).unwrap_or("")),
+                TextField::Name => Cow::Owned(meta.stem()),
+                TextField::Extension => Cow::Owned(meta.extension()),
+                TextField::Path => Cow::Owned(meta.full_path()),
+                TextField::Folder => Cow::Owned(meta.folder()),
+            };
+            dict.lookup(&text, ctx.lang)
+                .map_err(|e| TemplateError::InvalidVariable(name.clone(), e))?
+                .or_else(|| dict.default.clone())
+                .ok_or_else(|| TemplateError::MissingValue(name.clone()))?
         }
         Var::Named(name) => {
             let dict = ctx.dicts.get(name).ok_or_else(|| TemplateError::UnknownNamed(name.clone()))?;

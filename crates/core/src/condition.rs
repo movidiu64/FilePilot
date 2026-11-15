@@ -68,6 +68,9 @@ pub enum Condition {
     /// caută în folderul fișierului și, în plus, în `within` (ex. unde au fost sortate
     /// descărcările de dinainte).
     Duplicate { is: bool, within: Vec<crate::WatchedFolder> },
+    /// A user variable finds a value in the file (`found: true`), or does not. The variable
+    /// is looked up by name in [`EvalCtx::vars`]; an unknown one finds nothing.
+    Var { name: String, found: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,10 +123,18 @@ pub fn content_key(op: TextOp, value: &str) -> u64 {
     h
 }
 
-/// Contextul evaluării: momentul curent, pentru condițiile relative la „acum”.
+/// Contextul evaluării: momentul curent, pentru condițiile relative la „acum”, și
+/// variabilele utilizatorului, pentru condițiile pe variabile.
 #[derive(Debug, Clone, Copy)]
-pub struct EvalCtx {
+pub struct EvalCtx<'a> {
     pub now: i64,
+    pub vars: Option<&'a std::collections::HashMap<String, crate::template::Dictionary>>,
+}
+
+impl EvalCtx<'_> {
+    pub fn new(now: i64) -> EvalCtx<'static> {
+        EvalCtx { now, vars: None }
+    }
 }
 
 /// Un fișier pregătit pentru evaluare: câmpurile text în minuscule se calculează
@@ -230,6 +241,8 @@ impl Condition {
             Condition::Text { field: TextField::Content, .. } => 10,
             // Listarea folderului și compararea fișierelor de aceeași dimensiune.
             Condition::Duplicate { .. } => 9,
+            // Possibly the file's text, and a search in it.
+            Condition::Var { .. } => 10,
             Condition::Text { .. } => 2,
             Condition::Size { .. } | Condition::Date { .. } => 3,
             Condition::All(c) | Condition::Any(c) => c.iter().map(Condition::cost).max().unwrap_or(0),
@@ -252,7 +265,7 @@ impl Condition {
         v
     }
 
-    pub fn matches(&self, p: &Prepared<'_>, ctx: &EvalCtx) -> bool {
+    pub fn matches(&self, p: &Prepared<'_>, ctx: &EvalCtx<'_>) -> bool {
         match self {
             Condition::AllFiles => true,
             Condition::All(c) => c.iter().all(|x| x.matches(p, ctx)),
@@ -286,6 +299,24 @@ impl Condition {
                     d
                 });
                 dup == *is
+            }
+            Condition::Var { name, found } => {
+                let Some(dict) = ctx.vars.and_then(|v| v.get(name)) else { return !*found };
+                let content = dict.field == TextField::Content;
+                let key = dict.content_key();
+                if content {
+                    if let Some(v) = p.loader.and_then(|l| l.verdict(p.meta, key)) {
+                        return v == *found;
+                    }
+                }
+                // Finding a value does not depend on letter case: the lowercase text will do.
+                let hit = dict.lookup(p.field(dict.field), crate::timefmt::Lang::En).ok().flatten().is_some();
+                if content && p.content.get().is_some_and(Option::is_some) {
+                    if let Some(l) = p.loader {
+                        l.remember(p.meta, key, hit);
+                    }
+                }
+                hit == *found
             }
             Condition::Size { op, bytes } => match op {
                 SizeOp::Larger => p.meta.size > *bytes,
@@ -340,6 +371,8 @@ impl Condition {
         match self {
             Condition::All(c) | Condition::Any(c) => c.iter().any(Condition::uses_content),
             Condition::Text { field: TextField::Content, .. } => true,
+            // The variable may search the file's text; checking stability first is harmless.
+            Condition::Var { .. } => true,
             _ => false,
         }
     }

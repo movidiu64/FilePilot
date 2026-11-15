@@ -8,7 +8,7 @@ use org_fs::MemFs;
 use org_journal::{undo, MemJournal};
 
 fn p(s: &str) -> PathBuf { PathBuf::from(s) }
-fn ctx(d: &HashMap<String, Dictionary>, now: i64) -> RenderCtx<'_> { RenderCtx { now, tz: Tz::Fixed(0), lang: Lang::Ro, dicts: d, content: None } }
+fn ctx(d: &HashMap<String, Dictionary>, now: i64) -> RenderCtx<'_> { RenderCtx { now, tz: Tz::Fixed(0), lang: Lang::Ro, dicts: d, content: None, raw: None } }
 const T0: i64 = 1_800_000_000;
 const DAY: i64 = 86_400;
 

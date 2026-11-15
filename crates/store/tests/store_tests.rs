@@ -180,7 +180,7 @@ fn crash_recovery_with_a_real_database() {
         {
             let mut s = Store::open(&path).unwrap();
             fs.fail_at(n);
-            let rc = RenderCtx { now: 0, tz: Tz::Fixed(0), lang: Lang::Ro, dicts: &d, content: None };
+            let rc = RenderCtx { now: 0, tz: Tz::Fixed(0), lang: Lang::Ro, dicts: &d, content: None, raw: None };
             let m = FileMeta::new("/dl/factura.pdf", "/dl", 100, timestamp(2025, 3, 7, 9, 0, 0), 5);
             let _ = run_rule(&mut fs, &mut s, &invoice_rule(), &m, &rc);
             s.simulate_crash();
@@ -201,7 +201,7 @@ fn undo_works_on_database_entries() {
     fs.add_file("/dl/factura.pdf", 100, 5);
     let d = HashMap::new();
     let mut s = Store::open_in_memory().unwrap();
-    let rc = RenderCtx { now: 0, tz: Tz::Fixed(0), lang: Lang::Ro, dicts: &d, content: None };
+    let rc = RenderCtx { now: 0, tz: Tz::Fixed(0), lang: Lang::Ro, dicts: &d, content: None, raw: None };
     let m = FileMeta::new("/dl/factura.pdf", "/dl", 100, timestamp(2025, 3, 7, 9, 0, 0), 5);
     let rep = run_rule(&mut fs, &mut s, &invoice_rule(), &m, &rc);
     assert!(rep.ok());
@@ -216,7 +216,7 @@ fn restored_files_are_remembered_and_daemon_leaves_them() {
     fs.add_file("/dl/factura.pdf", 100, 5);
     let d = HashMap::new();
     let mut s = Store::open_in_memory().unwrap();
-    let rc = RenderCtx { now: 0, tz: Tz::Fixed(0), lang: Lang::Ro, dicts: &d, content: None };
+    let rc = RenderCtx { now: 0, tz: Tz::Fixed(0), lang: Lang::Ro, dicts: &d, content: None, raw: None };
     let m = FileMeta::new("/dl/factura.pdf", "/dl", 100, timestamp(2025, 3, 7, 9, 0, 0), 5);
     let rep = run_rule(&mut fs, &mut s, &invoice_rule(), &m, &rc);
     undo_run(&mut fs, &mut s, rep.run_id, false);

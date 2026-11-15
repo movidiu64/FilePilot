@@ -606,9 +606,9 @@ async fn preview(
         Err(_) => (HashSet::new(), HashSet::new()),
     };
 
-    let ctx = EvalCtx { now: now_ts() };
+    let ctx = EvalCtx { now: now_ts(), vars: Some(&dicts) };
     let lang = if lang.as_deref() == Some("en") { Lang::En } else { Lang::Ro };
-    let rctx = RenderCtx { now: ctx.now, tz: Tz::At(offset_at), lang, dicts: &dicts, content: None };
+    let rctx = RenderCtx::new(ctx.now, Tz::At(offset_at), lang, &dicts);
     let fs = SysFs;
 
     // 1. Lista fișierelor (rapid), ca progresul să aibă un total.
@@ -703,7 +703,7 @@ async fn preview(
         } else {
             let with_text;
             let rc = if rule.renders_content(&dicts) {
-                with_text = RenderCtx { content: content.load(&meta), ..rctx.clone() };
+                with_text = content.render_ctx(&meta, &rctx);
                 &with_text
             } else {
                 &rctx
@@ -1128,6 +1128,68 @@ fn export_rules(path: String, text: String) -> Result<(), String> {
     fs::write(path, org_portable::export(&b.rules, &b.dictionaries, false)).map_err(|e| e.to_string())
 }
 
+/// Longest text the variable preview works on (characters).
+const PREVIEW_TEXT_CHARS: usize = 300_000;
+
+/// What a variable (sent as its JSON definition) finds in `text`: the value used and every
+/// match, with UTF-16 offsets so the window can mark them.
+#[tauri::command]
+fn test_variable(def: String, text: String, lang: Option<String>) -> Result<String, String> {
+    let wrapped = format!(r#"{{"app":"filepilot","schema_version":1,"rules":[],"dictionaries":{{"v":{def}}}}}"#);
+    let d = match org_portable::import(&wrapped) {
+        Ok(mut b) => b.dictionaries.remove("v").ok_or("no variable")?,
+        Err(e) => return Ok(json::to_string_pretty(&obj(vec![("error", s(&e.to_string()))]))),
+    };
+    let lang = if lang.as_deref() == Some("en") { Lang::En } else { Lang::Ro };
+    let text: String = text.chars().take(PREVIEW_TEXT_CHARS).collect();
+    let utf16 = |byte: usize| Value::Int(text[..byte].encode_utf16().count() as i64);
+    let (matches, used) = match &d.extract {
+        Some(ex) => {
+            let x = match org_core::Extractor::new(ex, lang) {
+                Ok(x) => x,
+                Err(e) => return Ok(json::to_string_pretty(&obj(vec![("error", s(&e.to_string()))]))),
+            };
+            let all = x.all(&text);
+            let used = match ex.occurrence {
+                org_core::Occurrence::Nth(n) => (n as usize).checked_sub(1).filter(|&i| i < all.len()),
+                org_core::Occurrence::Last => all.len().checked_sub(1),
+            };
+            (all, used)
+        }
+        None => (Vec::new(), None),
+    };
+    let value = match &d.extract {
+        Some(_) => used.map(|i| matches[i].value.clone()),
+        None => d.lookup(&text, lang).ok().flatten(),
+    };
+    Ok(json::to_string_pretty(&obj(vec![
+        ("found", Value::Bool(value.is_some())),
+        ("value", value.as_deref().map_or(Value::Null, s)),
+        ("used", used.map_or(Value::Null, |i| Value::Int(i as i64))),
+        (
+            "matches",
+            Value::Arr(
+                matches
+                    .iter()
+                    .map(|m| obj(vec![("start", utf16(m.start)), ("end", utf16(m.end)), ("value", s(&m.value))]))
+                    .collect(),
+            ),
+        ),
+    ])))
+}
+
+/// The text FilePilot reads from a file (TXT, DOCX, XLSX, ODT, PDF), for the variable preview.
+#[tauri::command]
+async fn file_text(path: String) -> Result<String, String> {
+    // An async command runs off the window's thread, so reading a large PDF does not freeze it.
+    let fs = SysFs;
+    let p = PathBuf::from(&path);
+    let st = fs.metadata(&p).map_err(|e| e.to_string())?;
+    let meta = FileMeta::new(&p, p.parent().unwrap_or(&p), st.size, st.modified, st.modified);
+    let doc = org_engine::load_doc(&fs, &meta).ok_or_else(|| "no_text".to_string())?;
+    Ok(doc.raw.chars().take(PREVIEW_TEXT_CHARS).collect())
+}
+
 /// Pauza din fișier: `Some(0)` = până la reluare; una expirată nu mai contează.
 fn read_pause(files: &DataFiles) -> Option<i64> {
     let v: i64 = fs::read_to_string(files.dir.join(PAUSE_FILE)).ok()?.trim().parse().ok()?;
@@ -1286,6 +1348,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            test_variable,
+            file_text,
             get_rules,
             save_rules,
             preview,

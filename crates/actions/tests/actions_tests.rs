@@ -33,7 +33,7 @@ fn mv(dest: &str) -> Action {
 }
 
 fn ctx(d: &HashMap<String, Dictionary>) -> RenderCtx<'_> {
-    RenderCtx { now: timestamp(2026, 10, 10, 12, 0, 0), tz: Tz::Fixed(0), lang: Lang::Ro, dicts: d, content: None }
+    RenderCtx { now: timestamp(2026, 10, 10, 12, 0, 0), tz: Tz::Fixed(0), lang: Lang::Ro, dicts: d, content: None, raw: None }
 }
 
 fn meta(path: &str) -> FileMeta {

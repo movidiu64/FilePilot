@@ -37,7 +37,7 @@ fn pdf_rule(id: u64) -> Rule {
 }
 
 fn ctx(d: &HashMap<String, Dictionary>, now: i64) -> RenderCtx<'_> {
-    RenderCtx { now, tz: Tz::Fixed(0), lang: Lang::Ro, dicts: d, content: None }
+    RenderCtx { now, tz: Tz::Fixed(0), lang: Lang::Ro, dicts: d, content: None, raw: None }
 }
 
 const T0: i64 = 1_800_000_000;
@@ -238,7 +238,7 @@ fn content_conditions_and_dictionaries_read_each_file_once() {
     let mut d = HashMap::new();
     d.insert(
         "Tip".to_string(),
-        Dictionary { field: TextField::Content, entries: vec![("factură, invoice".into(), "Facturi".into())], default: Some("Altele".into()) },
+        Dictionary { field: TextField::Content, entries: vec![("factură, invoice".into(), "Facturi".into())], default: Some("Altele".into()), extract: None },
     );
     let mut r1 = pdf_rule(1);
     r1.folders[0].recursive = false;
@@ -721,4 +721,76 @@ fn content_rules_do_not_reread_unchanged_files_after_a_restart() {
     e4.set_prints(Prints::default().with_verdicts(verdicts));
     e4.scan(&mut fs, &mut MemJournal::new(), &ctx(&d, T0));
     assert!(fs.reads.get() >= 19);
+}
+
+fn var(field: TextField, ex: Extract, default: Option<&str>) -> Dictionary {
+    Dictionary { field, entries: Vec::new(), default: default.map(String::from), extract: Some(ex) }
+}
+
+/// Invoices filed by supplier and invoice date, both taken from the text; files without a
+/// date are left alone; the supplier keeps the case written in the list.
+#[test]
+fn values_from_the_text_build_the_destination() {
+    let mut fs = MemFs::new();
+    fs.add_file_with("/dl/a.txt", "FACTURA ENEL\nData emiterii: 03.10.2026\nScadenta: 30.10.2026".as_bytes(), 1);
+    fs.add_file_with("/dl/b.txt", "Factura Digi din 7 noiembrie 2026".as_bytes(), 1);
+    fs.add_file_with("/dl/c.txt", "Factura fara data".as_bytes(), 1);
+    let mut d = HashMap::new();
+    d.insert(
+        "Supplier".to_string(),
+        var(TextField::Content, Extract { kind: ExtractKind::Words(vec!["Enel".into(), "Digi".into()]), ..Extract::default() }, Some("Other")),
+    );
+    d.insert("Date".to_string(), var(TextField::Content, Extract { kind: ExtractKind::Date { format: "AAAA-LL".into() }, ..Extract::default() }, None));
+    let mut r = pdf_rule(1);
+    r.folders[0].recursive = false;
+    r.condition = Condition::All(vec![Condition::Var { name: "Date".into(), found: true }]);
+    r.actions = vec![Action::Move { dest: t("/facturi/{var:Supplier}/{var:Date}"), conflict: Conflict::Rename, keep_structure: false, remove_empty: false }];
+    let mut e = Engine::new(vec![r], 0);
+    e.scan(&mut fs, &mut MemJournal::new(), &ctx(&d, T0));
+    let mut f = fs.file_paths();
+    f.sort();
+    assert_eq!(f, vec![p("/dl/c.txt"), p("/facturi/Digi/2026-11/b.txt"), p("/facturi/Enel/2026-10/a.txt")]);
+    assert_eq!(fs.reads.get(), 3, "each file is read once for the condition and both variables");
+}
+
+#[test]
+fn variable_conditions_are_remembered_like_content_conditions() {
+    let mut fs = MemFs::new();
+    for i in 0..10 {
+        fs.add_file_with(format!("/dl/doc{i}.txt"), format!("offer {i}").as_bytes(), 1);
+    }
+    let mut d = HashMap::new();
+    d.insert("No".to_string(), var(TextField::Content, Extract { kind: ExtractKind::Pattern("INV-####".into()), ..Extract::default() }, None));
+    let mut r = pdf_rule(1);
+    r.folders[0].recursive = false;
+    r.condition = Condition::All(vec![Condition::Var { name: "No".into(), found: true }]);
+    r.actions = vec![Action::Trash { remove_empty: false }];
+    let mut e = Engine::new(vec![r.clone()], 0);
+    e.scan(&mut fs, &mut MemJournal::new(), &ctx(&d, T0));
+    let verdicts = e.prints().take_verdict_changes();
+    assert_eq!(verdicts.len(), 10);
+    fs.reads.set(0);
+    let mut e2 = Engine::new(vec![r.clone()], 0);
+    e2.set_prints(Prints::default().with_verdicts(verdicts.clone()));
+    e2.scan(&mut fs, &mut MemJournal::new(), &ctx(&d, T0));
+    assert_eq!(fs.reads.get(), 0, "unchanged files are not read again");
+    // A changed definition is a different key: the files are read again.
+    d.insert("No".to_string(), var(TextField::Content, Extract { kind: ExtractKind::Pattern("offer #".into()), ..Extract::default() }, None));
+    let mut e3 = Engine::new(vec![r], 0);
+    e3.set_prints(Prints::default().with_verdicts(verdicts));
+    e3.scan(&mut fs, &mut MemJournal::new(), &ctx(&d, T0));
+    assert_eq!(fs.trashed().len(), 10);
+}
+
+#[test]
+fn a_missing_or_unknown_variable_finds_nothing() {
+    let mut fs = MemFs::new();
+    fs.add_file_with("/dl/a.txt", b"hello", 1);
+    let d = HashMap::new();
+    let mut r = pdf_rule(1);
+    r.folders[0].recursive = false;
+    r.condition = Condition::Any(vec![Condition::Var { name: "Nope".into(), found: false }]);
+    r.actions = vec![Action::Trash { remove_empty: false }];
+    Engine::new(vec![r], 0).scan(&mut fs, &mut MemJournal::new(), &ctx(&d, T0));
+    assert_eq!(fs.trashed(), vec![p("/dl/a.txt")]);
 }

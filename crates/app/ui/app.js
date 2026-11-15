@@ -35,6 +35,8 @@ const S = {
   jlimit: 100,
   pv: { token: 0, loading: false, data: null, error: null, filter: 'all', prog: null, sort: null },
   dictSel: null,
+  // The variable preview: whose it is and the text pasted or loaded.
+  varPv: { name: null, text: '' },
   autostart: false,
   jsonEdited: false,
 };
@@ -499,6 +501,8 @@ function ruleIssues(r) {
       n.items.forEach(walk);
     } else if (n.type === 'text' && n.op !== 'is_nothing' && !String(n.value || '').trim()) {
       warn(n, 'value', t('issEmptyValue'));
+    } else if (n.type === 'var' && !S.doc.dictionaries[n.name]) {
+      err(n, 'name', n.name ? t('issVarUnknown', { name: n.name }) : t('issVarNone'));
     }
   };
   walk(r.condition);
@@ -784,10 +788,20 @@ function contextMenu(ev, items) {
 const TPL_FIELDS = ['dest', 'name', 'ext', 'program', 'line'];
 
 /// Regulile care folosesc `{var:name}` (în orice câmp cu variabile).
+/// Calls `fn` for every leaf of a condition tree.
+function eachLeaf(n, fn) {
+  if (n.type === 'all' || n.type === 'any') n.items.forEach((x) => eachLeaf(x, fn));
+  else fn(n);
+}
+
 function dictUsers(name) {
   const tok = `{var:${name}}`;
-  return S.doc.rules.filter((r) => r.actions.some((a) =>
-    TPL_FIELDS.some((f) => typeof a[f] === 'string' && a[f].includes(tok)) || (a.args || []).some((x) => x.includes(tok))));
+  return S.doc.rules.filter((r) => {
+    let inCond = false;
+    eachLeaf(r.condition, (n) => { if (n.type === 'var' && n.name === name) inCond = true; });
+    return inCond || r.actions.some((a) =>
+      TPL_FIELDS.some((f) => typeof a[f] === 'string' && a[f].includes(tok)) || (a.args || []).some((x) => x.includes(tok)));
+  });
 }
 
 /// Înlocuiește `{var:vechi}` cu `{var:nou}` în acțiunile regulilor date.
@@ -798,6 +812,7 @@ function retargetDict(rules, from, to) {
     for (const f of TPL_FIELDS) if (typeof a[f] === 'string' && a[f].includes(a1)) { a[f] = a[f].split(a1).join(a2); n++; }
     if (a.args) a.args = a.args.map((x) => (x.includes(a1) ? (n++, x.split(a1).join(a2)) : x));
   }
+  for (const r of rules) eachLeaf(r.condition, (c) => { if (c.type === 'var' && c.name === from) { c.name = to; n++; } });
   return n;
 }
 
@@ -913,6 +928,8 @@ function dictShapeError(d) {
   if (!TEXT_FIELDS.includes(d.field)) return t('dictJsonField', { list: TEXT_FIELDS.join(', ') });
   if (!Array.isArray(d.entries) || !d.entries.every((e) => Array.isArray(e) && e.length === 2 && e.every((x) => typeof x === 'string'))) return t('dictJsonEntries');
   if (!(d.default === null || d.default === undefined || typeof d.default === 'string')) return t('dictJsonDefault');
+  if (d.extract !== undefined && d.extract !== null
+    && (typeof d.extract !== 'object' || !VAR_KINDS.includes(d.extract.kind))) return t('dictJsonExtract', { list: VAR_KINDS.join(', ') });
   return null;
 }
 
@@ -932,7 +949,7 @@ function applyDictJson() {
   }
   const shape = dictShapeError(d);
   if (shape) { err(shape); return; }
-  d = { field: d.field, entries: d.entries, default: d.default ?? null };
+  d = { field: d.field, entries: d.entries, default: d.default ?? null, ...(d.extract ? { extract: d.extract } : {}) };
   if (name !== S.dictSel) {
     if (S.doc.dictionaries[name]) { err(t('dictExists', { name })); return; }
     if (!renameDict(S.dictSel, name)) return;
@@ -1098,13 +1115,13 @@ function tplInput(value, onchange, label, multiline, browse) {
 // ---------- condiții ----------
 const TEXT_FIELDS = ['name', 'extension', 'path', 'folder', 'content'];
 const FIELD_LABEL = { name: 'fieldName', extension: 'fieldExtension', path: 'fieldPath', folder: 'fieldFolder', content: 'fieldContent',
-  size: 'fieldSize', created: 'fieldCreated', modified: 'fieldModified', duplicate: 'fieldDuplicate' };
+  size: 'fieldSize', created: 'fieldCreated', modified: 'fieldModified', duplicate: 'fieldDuplicate', var: 'fieldVar' };
 const TEXT_OPS = [['is', 'opIs'], ['is_not', 'opIsNot'], ['contains', 'opContains'], ['does_not_contain', 'opDoesNotContain'],
   ['is_nothing', 'opIsNothing'], ['starts_with', 'opStartsWith'], ['ends_with', 'opEndsWith']];
 const DATE_OPS = [['older_than_days', 'opOlderThanDays'], ['within_days', 'opWithinDays'], ['before', 'opBefore'], ['after', 'opAfter']];
 
 function leafField(n) {
-  return n.type === 'text' ? n.field : n.type === 'size' ? 'size' : n.type === 'duplicate' ? 'duplicate' : n.field; // date: created|modified
+  return n.type === 'text' ? n.field : n.type === 'size' ? 'size' : n.type === 'duplicate' ? 'duplicate' : n.type === 'var' ? 'var' : n.field; // date: created|modified
 }
 
 function changeLeafField(node, field) {
@@ -1113,6 +1130,7 @@ function changeLeafField(node, field) {
   if (TEXT_FIELDS.includes(field)) Object.assign(node, keep ? {} : {}, { type: 'text', field, op: field === 'content' ? 'contains' : 'is', value: '' });
   else if (field === 'size') Object.assign(node, { type: 'size', op: 'larger', bytes: 1024 * 1024 });
   else if (field === 'duplicate') Object.assign(node, { type: 'duplicate', is: true });
+  else if (field === 'var') Object.assign(node, { type: 'var', name: Object.keys(S.doc.dictionaries)[0] || '', found: true });
   else Object.assign(node, { type: 'date', field, op: 'older_than_days', value: 30 });
 }
 
@@ -1135,6 +1153,17 @@ function renderLeaf(node, parent, index) {
     else kids.push(h('span', { class: 'grow' }));
   } else if (node.type === 'duplicate') {
     kids.push(select([['true', t('dupIs')], ['false', t('dupIsNot')]], String(node.is !== false), (v) => { node.is = v === 'true'; markDirty(); }, t('operator')));
+    kids.push(h('span', { class: 'grow' }));
+  } else if (node.type === 'var') {
+    const names = Object.keys(S.doc.dictionaries);
+    if (node.name && !names.includes(node.name)) names.unshift(node.name);
+    if (names.length) {
+      vi = select(names.map((n) => [n, n]), node.name, (v) => { node.name = v; markDirty(); render(); }, t('fieldVar'));
+      kids.push(vi);
+    } else {
+      kids.push(h('button', { type: 'button', class: 'btn small', onclick: () => { S.tab = 'vars'; newDict(); } }, t('varCreate')));
+    }
+    kids.push(select([['true', t('varFound')], ['false', t('varNotFound')]], String(node.found !== false), (v) => { node.found = v === 'true'; markDirty(); render(); }, t('operator')));
     kids.push(h('span', { class: 'grow' }));
   } else if (node.type === 'size') {
     kids.push(select([['larger', t('opLarger')], ['smaller', t('opSmaller')]], node.op, (v) => { node.op = v; markDirty(); }, t('operator')));
@@ -1165,9 +1194,11 @@ function renderLeaf(node, parent, index) {
   }
   if (node.type === 'text' && node.field === 'content') kids.push(info(t('fieldContent'), t('contentHelp')));
   if (node.type === 'duplicate') kids.push(info(t('fieldDuplicate'), t('dupHelp')));
+  if (node.type === 'var') kids.push(info(t('fieldVar'), t('varCondHelp')));
   kids.push(iconBtn('x', t('removeCondition'), () => { parent.items.splice(index, 1); markDirty(); render(); }));
   return h('div', { class: 'leaf' }, h('div', { class: 'cond-row' }, kids),
     node.type === 'text' ? issueSlot(node, 'value', vi || null) : null,
+    node.type === 'var' ? issueSlot(node, 'name', vi || null) : null,
     node.type === 'duplicate' ? dupWithin(node) : null);
 }
 
@@ -1584,6 +1615,7 @@ function condWords(n, depth = 0) {
       if (n.op === 'within_days') return t('sWithin', { f, n: days(n.value) });
       return t(n.op === 'before' ? 'sBefore' : 'sAfter', { f, d: fmtDate(n.value, 'ZZ.LL.AAAA') });
     }
+    case 'var': return t(n.found === false ? 'sVarNotFound' : 'sVarFound', { v: quote(n.name || '…') });
     case 'duplicate': {
       const w = (n.within || []).filter((x) => x.path);
       if (!w.length) return t(n.is === false ? 'sNotDup' : 'sDup');
@@ -2666,24 +2698,157 @@ function renderVarsTab() {
         onkeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } }),
       h('button', { type: 'button', class: 'btn', onclick: () => duplicateDict(name) }, t('duplicate')),
       h('button', { type: 'button', class: 'btn danger', onclick: () => deleteDict(name) }, t('deleteDict'))),
-    h('p', { class: 'hint' }, t('dictHelp'), ' ', t('dictUsage', { usage: `{var:${name}}` }), ' ',
+    h('p', { class: 'hint' }, t(d.extract ? 'varExtractHelp' : 'dictHelp'), ' ', t('dictUsage', { usage: `{var:${name}}` }), ' ',
       users.length ? t('dictUsedBy', { rules: users.map((r) => r.name).join(', ') }) : t('dictUnused')),
     h('section', { class: 'card' },
       h('div', { class: 'cbody' },
+        h('label', { class: 'lbl' }, t('varKind'),
+          select(VAR_KINDS_UI.map((k) => [k, t(VAR_KIND_LABEL[k])]), varKind(d), (v) => { setVarKind(d, v); markDirty(); render(); }, t('varKind'))),
         h('label', { class: 'lbl' }, t('dictField'),
           select(TEXT_FIELDS.map((k) => [k, t(FIELD_LABEL[k])]), d.field, (v) => { d.field = v; markDirty(); render(); }, t('dictField'))),
-        d.field === 'content' ? h('p', { class: 'hint' }, t('dictContentHelp')) : null,
-        h('div', { class: 'dict-head muted' }, h('span', {}, t('dictKey')), h('span', {}, t('dictValue')), h('span')),
-        d.entries.map((en, i) => h('div', { class: 'dict-row' },
-          textInput(en[0], (v) => { en[0] = v; markDirty(); }, t('dictKey'), { placeholder: t('dictKeyPh') }),
-          textInput(en[1], (v) => { en[1] = v; markDirty(); }, t('dictValue')),
-          iconBtn('x', t('removeEntry'), () => { d.entries.splice(i, 1); markDirty(); render(); }))),
-        h('p', { class: 'hint' }, t('dictCommaHint')),
-        h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn', onclick: () => { d.entries.push(['', '']); markDirty(); render(); } }, t('addEntry'))),
+        d.extract ? renderExtractFields(d) : renderDictEntries(d),
         h('label', { class: 'lbl' }, t('dictDefault'),
           textInput(d.default ?? '', (v) => { d.default = v === '' ? null : v; markDirty(); }, t('dictDefault'), { placeholder: t('dictDefaultNone') })))),
+    renderVarPreview(name, d),
     renderDictJsonCard(name, d));
   return h('div', { class: 'rules-layout' }, list, main);
+}
+
+// ---------- variables: kinds, extraction, preview ----------
+const VAR_KINDS = ['date', 'words', 'pattern', 'regex'];
+const VAR_KINDS_UI = ['dict', ...VAR_KINDS];
+const VAR_KIND_LABEL = { dict: 'varKindDict', date: 'varKindDate', words: 'varKindWords', pattern: 'varKindPattern', regex: 'varKindRegex' };
+const DATE_FORMATS = ['AAAA-LL-ZZ', 'ZZ.LL.AAAA', 'AAAA-LL', 'AAAA', 'LLLL AAAA'];
+
+const varKind = (d) => (d.extract ? d.extract.kind : 'dict');
+
+function setVarKind(d, kind) {
+  if (kind === varKind(d)) return;
+  const fromDict = !d.extract;
+  if (kind === 'dict') {
+    delete d.extract;
+    if (!d.entries.length) d.entries.push(['', '']);
+    return;
+  }
+  const old = d.extract || {};
+  d.extract = { kind, occurrence: old.occurrence ?? 1, before: old.before ?? '', after: old.after ?? '' };
+  if (kind === 'date') d.extract.format = 'AAAA-LL-ZZ';
+  if (kind === 'words') d.extract.words = [];
+  if (kind === 'pattern') d.extract.pattern = '';
+  if (kind === 'regex') d.extract.regex = '';
+  // Extracted values usually come from the document; a dictionary's entries are not used.
+  if (fromDict && d.field === 'extension') d.field = 'content';
+  d.entries = d.entries.filter((e) => e[0] || e[1]);
+}
+
+function renderDictEntries(d) {
+  return h('div', {},
+    d.field === 'content' ? h('p', { class: 'hint' }, t('dictContentHelp')) : null,
+    h('div', { class: 'dict-head muted' }, h('span', {}, t('dictKey')), h('span', {}, t('dictValue')), h('span')),
+    d.entries.map((en, i) => h('div', { class: 'dict-row' },
+      textInput(en[0], (v) => { en[0] = v; markDirty(); }, t('dictKey'), { placeholder: t('dictKeyPh') }),
+      textInput(en[1], (v) => { en[1] = v; markDirty(); }, t('dictValue')),
+      iconBtn('x', t('removeEntry'), () => { d.entries.splice(i, 1); markDirty(); render(); }))),
+    h('p', { class: 'hint' }, t('dictCommaHint')),
+    h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn', onclick: () => { d.entries.push(['', '']); markDirty(); render(); } }, t('addEntry'))));
+}
+
+function renderExtractFields(d) {
+  const x = d.extract;
+  const upd = (k) => (v) => { x[k] = v; markDirty(); schedulePreview(); };
+  let what;
+  if (x.kind === 'date') {
+    what = h('div', {},
+      h('label', { class: 'lbl' }, t('varDateFormat'),
+        h('div', { class: 'row' },
+          textInput(x.format ?? '', upd('format'), t('varDateFormat'), { placeholder: 'AAAA-LL-ZZ' }),
+          select([['', t('varFormatPresets')], ...DATE_FORMATS.map((f) => [f, f])], '', (v) => { if (v) { x.format = v; markDirty(); render(); schedulePreview(); } }, t('varFormatPresets')))),
+      h('p', { class: 'hint' }, t('varDateHelp')));
+  } else if (x.kind === 'words') {
+    const ta = h('textarea', { class: 'inp', rows: 5, 'aria-label': t('varWords'), spellcheck: false,
+      oninput: (e) => { x.words = e.target.value.split('\n').map((w) => w.trim()).filter(Boolean); markDirty(); schedulePreview(); } });
+    ta.value = (x.words || []).join('\n');
+    what = h('div', {}, h('label', { class: 'lbl' }, t('varWords'), ta), h('p', { class: 'hint' }, t('varWordsHelp')));
+  } else if (x.kind === 'pattern') {
+    what = h('div', {},
+      h('label', { class: 'lbl' }, t('varPattern'), textInput(x.pattern ?? '', upd('pattern'), t('varPattern'), { placeholder: 'INV-####', class: 'inp mono' })),
+      h('p', { class: 'hint' }, t('varPatternHelp')));
+  } else {
+    what = h('div', {},
+      h('label', { class: 'lbl' }, t('varRegex'), textInput(x.regex ?? '', upd('regex'), t('varRegex'), { placeholder: 'Nr\\.?\\s*(\\d+)', class: 'inp mono' })),
+      h('p', { class: 'hint' }, t('varRegexHelp')));
+  }
+  const occ = x.occurrence === 'last' ? 'last' : String(x.occurrence || 1);
+  const occOpts = [...Array.from({ length: 10 }, (_, i) => [String(i + 1), i === 0 ? t('occFirst') : t('occNth', { n: i + 1 })]), ['last', t('occLast')]];
+  if (!occOpts.some(([v]) => v === occ)) occOpts.splice(10, 0, [occ, t('occNth', { n: occ })]);
+  return h('div', {}, what,
+    h('div', { class: 'grid2' },
+      h('label', { class: 'lbl' }, t('varOccurrence'),
+        select(occOpts, occ, (v) => { x.occurrence = v === 'last' ? 'last' : parseInt(v, 10); markDirty(); schedulePreview(); }, t('varOccurrence'))),
+      h('span')),
+    h('div', { class: 'grid2' },
+      h('label', { class: 'lbl' }, t('varBefore'), textInput(x.before ?? '', upd('before'), t('varBefore'), { placeholder: t('varBeforePh') })),
+      h('label', { class: 'lbl' }, t('varAfter'), textInput(x.after ?? '', upd('after'), t('varAfter'), { placeholder: t('varAfterPh') }))),
+    h('p', { class: 'hint' }, t('varLabelHelp')));
+}
+
+let previewTimer = null;
+function schedulePreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(runVarPreview, 250);
+}
+
+/// Shows what the selected variable finds in the preview text.
+async function runVarPreview() {
+  const out = document.getElementById('var-pv-out');
+  const name = S.dictSel;
+  const d = name ? S.doc.dictionaries[name] : null;
+  if (!out || !d) return;
+  const text = S.varPv.text || '';
+  if (!text) { out.replaceChildren(h('p', { class: 'muted' }, t('varPreviewEmpty'))); return; }
+  let res;
+  try { res = JSON.parse(await invoke('test_variable', { def: JSON.stringify(d), text, lang: LANG })); }
+  catch (e) { out.replaceChildren(h('p', { class: 'err' }, String(e))); return; }
+  if (S.dictSel !== name) return;
+  if (res.error) { out.replaceChildren(h('p', { class: 'err' }, res.error)); return; }
+  const head = res.found
+    ? h('p', {}, t('varResult'), ' ', h('strong', { class: 'mono' }, res.value))
+    : h('p', { class: 'muted' }, d.default ? t('varResultDefault', { d: d.default }) : t('varResultNone'));
+  // The text with every match marked; the one used is emphasised.
+  const parts = [];
+  let at = 0;
+  const shown = text.slice(0, 20000);
+  (res.matches || []).filter((m) => m.end <= shown.length).forEach((m, i) => {
+    if (m.start > at) parts.push(shown.slice(at, m.start));
+    parts.push(h('mark', { class: i === res.used ? 'used' : '', title: m.value }, shown.slice(m.start, m.end)));
+    at = m.end;
+  });
+  parts.push(shown.slice(at));
+  out.replaceChildren(...[head,
+    res.matches && res.matches.length > 1 ? h('p', { class: 'muted small' }, t('varMatches', { n: res.matches.length })) : null,
+    h('pre', { class: 'var-pv-text' }, parts),
+    text.length > shown.length ? h('p', { class: 'muted small' }, t('varPreviewCut')) : null].filter(Boolean));
+}
+
+function renderVarPreview(name, d) {
+  if (S.varPv.name !== name) S.varPv = { name, text: S.varPv.text || '' };
+  const ta = h('textarea', { id: 'var-pv-ta', class: 'inp', rows: 5, spellcheck: false, 'aria-label': t('varPreview'), placeholder: t('varPreviewPh'),
+    oninput: (e) => { S.varPv.text = e.target.value; schedulePreview(); } });
+  ta.value = S.varPv.text;
+  const load = async () => {
+    try {
+      const path = await TAURI.dialog.open({ multiple: false, title: t('varLoadFile') });
+      if (!path) return;
+      S.varPv.text = await invoke('file_text', { path });
+      ta.value = S.varPv.text;
+      runVarPreview();
+    } catch (e) { toast(String(e) === 'no_text' ? t('varNoText') : String(e), true); }
+  };
+  setTimeout(runVarPreview, 0);
+  return h('section', { class: 'card' },
+    h('div', { class: 'ch' }, h('span', {}, t('varPreview')),
+      h('button', { type: 'button', class: 'btn small', onclick: load }, t('varLoadFile'))),
+    h('div', { class: 'cbody' }, h('p', { class: 'hint' }, t('varPreviewHelp')), ta, h('div', { id: 'var-pv-out', class: 'var-pv-out' })));
 }
 
 // ---------- fila Setări ----------

@@ -5,6 +5,14 @@ a new major version may need you to review your rules, minor versions add featur
 
 ## [Unreleased]
 
+### Added
+- **Variables that take values from the text**: a date (in the usual Romanian and English forms, written in your format), a word from a list, a simple pattern (`INV-####`) or a regular expression; the first, n-th or last occurrence; optionally only next to a label (`Total:`). Use them in destinations and names as `{var:Name}`.
+- **Variable** condition: a variable finds a value in the file, or finds nothing. Results on the file's text are remembered per file version.
+- Preview in the Variables tab: paste text or load a file and see every value found, with the one used highlighted.
+
+### Changed
+- Dictionaries are now one type of variable; the Variables tab and its texts say "variable".
+
 ## [1.1.0] - 2026-11-15
 
 ### Added

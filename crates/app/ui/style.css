@@ -483,3 +483,11 @@ form.modal .lbl > .inp { color: var(--text); font-size: 14px; }
   .tab { padding: 0 10px; }
   .brand { padding-right: 8px; }
 }
+
+/* Variables: extraction fields and preview */
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.var-pv-out { margin-top: 10px; }
+.var-pv-text { max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--sub); font: 12.5px/1.5 Consolas, "Cascadia Mono", monospace; }
+.var-pv-text mark { background: color-mix(in srgb, var(--accent) 18%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+.var-pv-text mark.used { background: color-mix(in srgb, var(--accent) 45%, transparent); outline: 1px solid var(--accent); }

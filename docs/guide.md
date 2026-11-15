@@ -7,7 +7,7 @@ FilePilot watches folders and applies *if–then* rules to the files that appear
 - [Conditions](#conditions)
 - [Actions](#actions)
 - [Archives](#archives)
-- [Variables](#variables)
+- [Variables](#variables) (and [your variables](#your-variables))
 - [Duplicates](#duplicates)
 - [Confirmations](#confirmations)
 - [Simulation](#simulation)
@@ -65,6 +65,7 @@ The first condition is **All of the following** (*and*), **Any of the following*
 | File size | larger than / smaller than, in B, KB, MB, GB (1 KB = 1024 B) | |
 | Date created, date modified | before / after a date, older than N days, within the last N days | |
 | Duplicate | the file has an older identical copy | see [Duplicates](#duplicates) |
+| Variable | one of your variables finds a value in the file, or finds nothing | see [Your variables](#your-variables) |
 
 Text conditions offer *is*, *is not*, *contains*, *does not contain*, *starts with*, *ends with* and *is empty*, and ignore letter case. For a range (size between two values) put two conditions in an *All of the following* group.
 
@@ -127,11 +128,33 @@ Variables can be used in destinations, names, arguments and commands. The **{ } 
 | `{path}` | full path |
 | `{size}` | size in bytes |
 | `{created:FORMAT}`, `{modified:FORMAT}`, `{now:FORMAT}` | date created, date modified, today |
-| `{var:Name}` | a dictionary value |
+| `{var:Name}` | one of your variables (below) |
 
 Date formats use these tokens (the picker inserts them for you): `AAAA` year, `AA` two-digit year, `LL` month, `LLLL` month name (in the interface language), `ZZ` day, `HH` hour, `MM` minute, `SS` second. Any other character is kept, so `{modified:AAAA-LL-ZZ}` gives `2026-11-15` and `{created:AAAA}\{created:LL}` gives the subfolders `2026\11`. To write a literal brace, double it: `{{` and `}}`.
 
-**Dictionaries** (Variables tab) turn a word found in the name, extension, path or content into a value. For example, extension `pdf, doc, docx` → `Documents`, `jpg, png` → `Images`, otherwise `Other`; then `{var:FileType}` in a destination sorts files into those folders. Entries are checked from top to bottom and the first match wins, so put the most specific first. If nothing matches and there is no default value, the rule does not run for that file. Dictionaries can be imported, exported and edited as JSON.
+### Your variables
+
+The **Variables** tab holds variables you define once and use in any rule, as `{var:Name}` in a destination, name or command, or in a **Variable** condition (*finds a value* / *finds nothing*). Each one searches a field (the file's text, its name, extension, path or folder) and is of one of these types:
+
+| Type | Value | Example |
+|---|---|---|
+| Dictionary | the value paired with the first key found | extension `pdf, doc, docx` → `Documents`, `jpg, png` → `Images` |
+| Date in the text | a date found in the text, written in your format | `15.11.2026`, `2026-11-15`, `15 noiembrie 2026`, `November 15, 2026` → `2026-11` |
+| Word from a list | the word or phrase found, as written in the list (whole words only) | `Enel`, `Digi`, `Orange Romania` |
+| Pattern | the text that matches a simple pattern | `INV-####` → `INV-0042` |
+| Regular expression | the first group of the expression, or the whole match | `Nr\.?\s*(\d+)` on `Nr. 4521` → `4521` |
+
+The types other than *Dictionary* also have:
+
+- **Which occurrence**: the first, the second… or the last value found.
+- **Text right before / after** (optional): only values next to that text count, with any spaces in between. With *Text right before* `Due date:` a date variable takes the due date, not the issue date.
+- **Preview**: paste a document's text or load a file to see every value found; the one used is highlighted.
+
+Pattern signs: `#` a digit, `@` a letter, `?` any character, `%` a number (`1234`, `1.234,56`), `*` any text on the same line (as little as possible, so put something after it), a space for any whitespace; `\` before a sign takes it literally (`\#`). Regular expressions support classes, groups, alternatives, `^ $ \b` and repetitions, ignore letter case and run in time proportional to the text, so a rule never hangs on one; backreferences and lookarounds are not supported. Day-first dates are assumed (`05/03/2026` is 5 March) unless only month-first makes a valid date (`11/25/2026`).
+
+If a variable finds nothing and has no default value, actions that use it do not run for that file. For variables that search the file's text, the text is read once per file for all rules, and the result of a **Variable** condition is remembered for each version of the file, like content conditions. Variables can be imported, exported and edited as JSON.
+
+Example: invoices filed by supplier and month. *Supplier* is a word-from-a-list variable (`Enel`, `Digi`, `E.ON`, default `Other`) and *Due* a date variable with format `AAAA-LL` and *Text right before* `Data scadentă:`; the rule's condition is *Variable Due finds a value* and its action *Move to* `D:\Invoices\{var:Supplier}\{var:Due}`.
 
 ## Duplicates
 

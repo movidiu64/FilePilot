@@ -28,6 +28,8 @@ fn sample_rules() -> Vec<Rule> {
                 Condition::Size { op: SizeOp::Larger, bytes: 1024 },
                 Condition::Date { field: DateField::Modified, op: DateOp::OlderThanDays(30) },
                 Condition::Date { field: DateField::Created, op: DateOp::Before(1_700_000_000) },
+                Condition::Var { name: "Data".into(), found: true },
+                Condition::Var { name: "Cod".into(), found: false },
             ]),
             actions: vec![
                 Action::Copy { dest: t("D:\\bk"), conflict: Conflict::Overwrite, keep_structure: true, then_target: false },
@@ -66,6 +68,44 @@ fn sample_dicts() -> BTreeMap<String, Dictionary> {
             field: TextField::Name,
             entries: vec![("enel".into(), "Enel".into()), ("digi".into(), "Digi".into())],
             default: Some("Altele".into()),
+            extract: None,
+        },
+    );
+    let ex = |kind, occurrence, before: &str, after: &str| Extract { kind, occurrence, before: before.into(), after: after.into() };
+    m.insert(
+        "Data".into(),
+        Dictionary {
+            field: TextField::Content,
+            entries: Vec::new(),
+            default: None,
+            extract: Some(ex(ExtractKind::Date { format: "AAAA-LL".into() }, Occurrence::Nth(2), "Data:", "")),
+        },
+    );
+    m.insert(
+        "Cod".into(),
+        Dictionary {
+            field: TextField::Name,
+            entries: Vec::new(),
+            default: Some("fără".into()),
+            extract: Some(ex(ExtractKind::Regex(r"Nr\.?\s*(\d+)".into()), Occurrence::Last, "", "\"")),
+        },
+    );
+    m.insert(
+        "Lista".into(),
+        Dictionary {
+            field: TextField::Content,
+            entries: Vec::new(),
+            default: None,
+            extract: Some(ex(ExtractKind::Words(vec!["Enel".into(), "E.ON".into()]), Occurrence::Nth(1), "", "")),
+        },
+    );
+    m.insert(
+        "Model".into(),
+        Dictionary {
+            field: TextField::Content,
+            entries: Vec::new(),
+            default: None,
+            extract: Some(ex(ExtractKind::Pattern("INV-####".into()), Occurrence::Nth(1), "", "")),
         },
     );
     m
@@ -283,4 +323,12 @@ fn the_example_rules_file_imports() {
     assert_eq!(b.rules.len(), 3);
     assert!(b.rules.iter().all(|r| !r.enabled && r.simulate));
     assert!(matches!(b.rules[0].actions[0], Action::Extract { .. }));
+}
+
+#[test]
+fn bad_variable_definitions_are_reported() {
+    for extract in [r#"{"kind":"magic"}"#, r#"{"kind":"date","occurrence":0}"#, r#"{"kind":"date","occurrence":"first"}"#] {
+        let text = format!(r#"{{"app":"filepilot","schema_version":1,"rules":[],"dictionaries":{{"X":{{"field":"content","entries":[],"extract":{extract}}}}}}}"#);
+        assert!(import(&text).is_err(), "{extract}");
+    }
 }

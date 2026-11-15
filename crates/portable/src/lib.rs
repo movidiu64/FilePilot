@@ -80,6 +80,50 @@ fn conflict_name(c: Conflict) -> &'static str {
     }
 }
 
+fn extract_value(e: &Extract) -> Value {
+    let mut v = match &e.kind {
+        ExtractKind::Date { format } => vec![("kind", s("date")), ("format", s(format))],
+        ExtractKind::Words(w) => vec![("kind", s("words")), ("words", Value::Arr(w.iter().map(|x| s(x)).collect()))],
+        ExtractKind::Pattern(p) => vec![("kind", s("pattern")), ("pattern", s(p))],
+        ExtractKind::Regex(r) => vec![("kind", s("regex")), ("regex", s(r))],
+    };
+    v.push((
+        "occurrence",
+        match e.occurrence {
+            Occurrence::Nth(n) => Value::Int(i64::from(n)),
+            Occurrence::Last => s("last"),
+        },
+    ));
+    v.push(("before", s(&e.before)));
+    v.push(("after", s(&e.after)));
+    obj(v)
+}
+
+fn extract_from(v: &Value, ctx: &str) -> R<Extract> {
+    let o = as_obj(v, ctx)?;
+    let text = |k: &str| match get(o, k) {
+        Some(Value::Str(x)) => x.clone(),
+        _ => String::new(),
+    };
+    let kind = match req_str(o, "kind", ctx)? {
+        "date" => ExtractKind::Date { format: text("format") },
+        "words" => ExtractKind::Words(match get(o, "words") {
+            Some(Value::Arr(ws)) => ws.iter().filter_map(|w| if let Value::Str(x) = w { Some(x.clone()) } else { None }).collect(),
+            _ => Vec::new(),
+        }),
+        "pattern" => ExtractKind::Pattern(text("pattern")),
+        "regex" => ExtractKind::Regex(text("regex")),
+        x => return bad(ctx, format!("unknown variable kind \"{x}\"")),
+    };
+    let occurrence = match get(o, "occurrence") {
+        None | Some(Value::Null) => Occurrence::Nth(1),
+        Some(Value::Str(x)) if x == "last" => Occurrence::Last,
+        Some(Value::Int(n)) if (1..=i64::from(u32::MAX)).contains(n) => Occurrence::Nth(*n as u32),
+        _ => return bad(ctx, "\"occurrence\" must be a number from 1, or \"last\""),
+    };
+    Ok(Extract { kind, occurrence, before: text("before"), after: text("after") })
+}
+
 fn folder_value(f: &WatchedFolder) -> Value {
     obj(vec![("path", s(&f.path.to_string_lossy())), ("recursive", Value::Bool(f.recursive))])
 }
@@ -107,6 +151,9 @@ fn cond_to_value(c: &Condition) -> Value {
                 v.push(("within", Value::Arr(within.iter().map(folder_value).collect())));
             }
             obj(v)
+        }
+        Condition::Var { name, found } => {
+            obj(vec![("type", s("var")), ("name", s(name)), ("found", Value::Bool(*found))])
         }
         Condition::Size { op, bytes } => obj(vec![
             ("type", s("size")),
@@ -211,7 +258,10 @@ pub fn export(rules: &[Rule], dicts: &BTreeMap<String, Dictionary>, include_hidd
                             Value::Arr(d.entries.iter().map(|(k, v)| Value::Arr(vec![s(k), s(v)])).collect()),
                         ),
                         ("default", d.default.as_deref().map_or(Value::Null, s)),
-                    ]),
+                    ]
+                    .into_iter()
+                    .chain(d.extract.as_ref().map(|e| ("extract", extract_value(e))))
+                    .collect()),
                 )
             })
             .collect(),
@@ -336,6 +386,7 @@ fn cond_from(v: &Value, depth: usize) -> R<Condition> {
                 _ => Vec::new(),
             },
         },
+        "var" => Condition::Var { name: req_str(o, "name", ctx)?.to_string(), found: opt_bool(o, "found", true, ctx)? },
         "size" => {
             let op = match req_str(o, "op", ctx)? {
                 "larger" => SizeOp::Larger,
@@ -484,9 +535,13 @@ pub fn import(text: &str) -> R<Bundle> {
                 Some(Value::Str(x)) => Some(x.clone()),
                 _ => None,
             };
+            let extract = match get(d, "extract") {
+                Some(e @ Value::Obj(_)) => Some(extract_from(e, &ctx)?),
+                _ => None,
+            };
             dictionaries.insert(
                 name.clone(),
-                Dictionary { field: parse_field(req_str(d, "field", &ctx)?, &ctx)?, entries, default },
+                Dictionary { field: parse_field(req_str(d, "field", &ctx)?, &ctx)?, entries, default, extract },
             );
         }
     }

@@ -264,7 +264,7 @@ impl Engine {
         let with_text;
         let rc = if rule.renders_content(rctx.dicts) {
             let text = TextCache::default();
-            with_text = RenderCtx { content: FsContent::new(&*fs, &text).load(&meta), ..rctx.clone() };
+            with_text = FsContent::new(&*fs, &text).render_ctx(&meta, rctx);
             &with_text
         } else {
             rctx
@@ -496,7 +496,7 @@ impl Engine {
             return Outcome::Nothing;
         };
         let mut cur = FileMeta::new(path, root, stat.size, created, stat.modified);
-        let ectx = EvalCtx { now: rctx.now };
+        let ectx = EvalCtx { now: rctx.now, vars: Some(rctx.dicts) };
         let mut cur_stat = stat;
         let mut ran = Vec::new();
         let mut stable_checked = false;
@@ -566,7 +566,7 @@ impl Engine {
             // Dicționarele pe conținut primesc textul (citit o dată, ca și pentru condiții).
             let with_text;
             let rc = if rule.renders_content(rctx.dicts) {
-                with_text = RenderCtx { content: FsContent::new(&*fs, &text).load(&cur), ..rctx.clone() };
+                with_text = FsContent::new(&*fs, &text).render_ctx(&cur, rctx);
                 &with_text
             } else {
                 rctx
@@ -657,7 +657,15 @@ pub enum Outcome {
 }
 
 /// Textul ultimului fișier citit, după cale, dimensiune și dată (toate regulile îl împart).
-pub type TextCache = RefCell<Option<((PathBuf, u64, i64), Option<Arc<str>>)>>;
+/// A file's text: as written (for values copied out of it) and in lowercase (for searches).
+#[derive(Clone)]
+pub struct Doc {
+    pub raw: Arc<str>,
+    pub lower: Arc<str>,
+}
+
+/// The text of the file being processed, read once for all rules.
+pub type TextCache = RefCell<Option<((PathBuf, u64, i64), Option<Doc>)>>;
 
 /// Citește textul fișierelor pentru condițiile și dicționarele pe conținut.
 pub struct FsContent<'f> {
@@ -705,25 +713,44 @@ impl ContentLoader for FsContent<'_> {
     }
 
     fn load(&self, meta: &FileMeta) -> Option<Arc<str>> {
+        self.doc(meta).map(|d| d.lower)
+    }
+}
+
+impl FsContent<'_> {
+    /// The file's text, read at most once per file version.
+    pub fn doc(&self, meta: &FileMeta) -> Option<Doc> {
         let key = (meta.path.clone(), meta.size, meta.modified);
         if let Some((k, t)) = &*self.cache.borrow() {
             if *k == key {
                 return t.clone();
             }
         }
-        let t = load_text(self.fs, meta);
+        let t = load_doc(self.fs, meta);
         *self.cache.borrow_mut() = Some((key, t.clone()));
         t
     }
+
+    /// `base` with the file's text, for variables that search it.
+    pub fn render_ctx<'d>(&self, meta: &FileMeta, base: &RenderCtx<'d>) -> RenderCtx<'d> {
+        let doc = self.doc(meta);
+        RenderCtx { content: doc.as_ref().map(|d| d.lower.clone()), raw: doc.map(|d| d.raw), ..base.clone() }
+    }
 }
 
-/// Textul fișierului, în minuscule; `None` dacă nu are text, e prea mare sau nu se poate citi.
-pub fn load_text(fs: &dyn Fs, meta: &FileMeta) -> Option<Arc<str>> {
+/// The file's text; `None` if it has none, is too large or cannot be read.
+pub fn load_doc(fs: &dyn Fs, meta: &FileMeta) -> Option<Doc> {
     let ext = meta.extension();
     let limit = org_content::read_limit(&ext, meta.size)?;
     let data = fs.read_prefix(&meta.path, limit).ok()?;
     let text = org_content::extract(&ext, &data)?;
-    Some(Arc::from(text.to_lowercase()))
+    let lower = Arc::from(text.to_lowercase());
+    Some(Doc { raw: Arc::from(text), lower })
+}
+
+/// Textul fișierului, în minuscule; `None` dacă nu are text, e prea mare sau nu se poate citi.
+pub fn load_text(fs: &dyn Fs, meta: &FileMeta) -> Option<Arc<str>> {
+    load_doc(fs, meta).map(|d| d.lower)
 }
 
 /// Cheia de stare a unei reguli în simulare (separată de cea reală).

@@ -13,8 +13,8 @@ fn text(field: TextField, op: TextOp, value: &str) -> Condition {
 }
 
 const NOW: i64 = 1_791_000_000;
-fn ctx() -> EvalCtx {
-    EvalCtx { now: NOW }
+fn ctx() -> EvalCtx<'static> {
+    EvalCtx::new(NOW)
 }
 
 // ---------- date ----------
@@ -195,9 +195,10 @@ fn render(tpl: &str, m: &FileMeta, mode: Mode) -> Result<String, TemplateError> 
             field: TextField::Name,
             entries: vec![("enel".into(), "Energie".into()), ("digi".into(), "Internet".into())],
             default: Some("Altele".into()),
+            extract: None,
         },
     )]);
-    let ctx = RenderCtx { now: NOW, tz: Tz::Fixed(0), lang: Lang::Ro, dicts: &dicts, content: None };
+    let ctx = RenderCtx { now: NOW, tz: Tz::Fixed(0), lang: Lang::Ro, dicts: &dicts, content: None, raw: None };
     Template::parse(tpl)?.render(m, &ctx, mode)
 }
 
@@ -347,7 +348,7 @@ fn dates_use_the_offset_valid_at_that_moment() {
         if (4..=9).contains(&m) { 3 * 3600 } else { 2 * 3600 }
     }
     let dicts = std::collections::HashMap::new();
-    let ctx = RenderCtx { now: timestamp(2026, 12, 1, 12, 0, 0), tz: Tz::At(bucuresti), lang: Lang::Ro, dicts: &dicts, content: None };
+    let ctx = RenderCtx { now: timestamp(2026, 12, 1, 12, 0, 0), tz: Tz::At(bucuresti), lang: Lang::Ro, dicts: &dicts, content: None, raw: None };
     // creat pe 15 iulie la 21:30 UTC = 16 iulie 00:30 ora României (vară)
     let m = FileMeta::new("/a/x.pdf", "/a", 1, timestamp(2026, 7, 15, 21, 30, 0), 0);
     let t = Template::parse("{created:AAAA-LL-ZZ HH:MM}").unwrap();
@@ -364,9 +365,10 @@ fn dictionary_key_with_commas_matches_any_of_them() {
             field: TextField::Extension,
             entries: vec![("pdf, doc,docx , ,".into(), "Documente".into()), ("jpg,png".into(), "Imagini".into())],
             default: Some("Altele".into()),
+            extract: None,
         },
     );
-    let ctx = RenderCtx { now: 0, tz: Tz::Fixed(0), lang: Lang::Ro, dicts: &dicts, content: None };
+    let ctx = RenderCtx { now: 0, tz: Tz::Fixed(0), lang: Lang::Ro, dicts: &dicts, content: None, raw: None };
     let t = Template::parse("{var:Tip}").unwrap();
     let r = |f: &str| t.render(&FileMeta::new(f, "/a", 1, 0, 0), &ctx, Mode::Raw).unwrap();
     assert_eq!(r("/a/x.PDF"), "Documente");
@@ -467,7 +469,7 @@ fn content_verdicts_are_reused_and_unreadable_files_are_not_remembered() {
     }
     let m = FileMeta::new("C:/dl/factura.pdf", "C:/dl", 10, 0, 0);
     let c = Condition::Text { field: TextField::Content, op: TextOp::Contains, value: "Factura".into() };
-    let ctx = EvalCtx { now: 0 };
+    let ctx = EvalCtx::new(0);
     let l = L { text: Some("factura nr. 12"), loads: Cell::new(0), memo: RefCell::new(vec![]) };
     assert!(c.matches(&Prepared::with_content(&m, &l), &ctx));
     assert_eq!(l.loads.get(), 1);
@@ -482,4 +484,69 @@ fn content_verdicts_are_reused_and_unreadable_files_are_not_remembered() {
     let l = L { text: None, loads: Cell::new(0), memo: RefCell::new(vec![]) };
     assert!(!c.matches(&Prepared::with_content(&m, &l), &ctx));
     assert!(l.memo.borrow().is_empty());
+}
+
+#[test]
+fn extract_variables_render_from_the_name_and_the_text() {
+    use std::sync::Arc;
+    let t = |s: &str| Template::parse(s).unwrap();
+    let mut dicts = HashMap::new();
+    dicts.insert(
+        "Code".to_string(),
+        Dictionary {
+            field: TextField::Name,
+            entries: Vec::new(),
+            default: Some("none".into()),
+            extract: Some(Extract { kind: ExtractKind::Pattern("@@-###".into()), ..Extract::default() }),
+        },
+    );
+    dicts.insert(
+        "Total".to_string(),
+        Dictionary {
+            field: TextField::Content,
+            entries: Vec::new(),
+            default: None,
+            extract: Some(Extract { kind: ExtractKind::Pattern("%".into()), before: "Total:".into(), ..Extract::default() }),
+        },
+    );
+    dicts.insert(
+        "Bad".to_string(),
+        Dictionary { field: TextField::Name, entries: Vec::new(), default: None, extract: Some(Extract { kind: ExtractKind::Regex("(".into()), ..Extract::default() }) },
+    );
+    let m = FileMeta::new("/dl/Order AB-123 final.pdf", "/dl", 1, NOW, NOW);
+    let mut ctx = RenderCtx { now: NOW, tz: Tz::Fixed(0), lang: Lang::Ro, dicts: &dicts, content: None, raw: None };
+    assert_eq!(t("{var:Code}").render(&m, &ctx, Mode::Path).unwrap(), "AB-123", "the original case of the name");
+    assert_eq!(t("{var:Total}").render(&m, &ctx, Mode::Path), Err(TemplateError::MissingValue("Total".into())));
+    ctx.raw = Some(Arc::from("Subtotal 10\nTOTAL: 1.234,56 RON"));
+    assert_eq!(t("{var:Total}").render(&m, &ctx, Mode::Path).unwrap(), "1.234,56");
+    assert!(matches!(t("{var:Bad}").render(&m, &ctx, Mode::Path), Err(TemplateError::InvalidVariable(..))));
+    let other = FileMeta::new("/dl/notes.pdf", "/dl", 1, NOW, NOW);
+    assert_eq!(t("{var:Code}").render(&other, &ctx, Mode::Path).unwrap(), "none", "the default value");
+}
+
+#[test]
+fn variable_conditions() {
+    let mut dicts = HashMap::new();
+    dicts.insert(
+        "Year".to_string(),
+        Dictionary {
+            field: TextField::Name,
+            entries: Vec::new(),
+            default: Some("unused".into()),
+            extract: Some(Extract { kind: ExtractKind::Regex(r"\b(20\d\d)\b".into()), ..Extract::default() }),
+        },
+    );
+    dicts.insert(
+        "Kind".to_string(),
+        Dictionary { field: TextField::Extension, entries: vec![("pdf, docx".into(), "Docs".into())], default: Some("Other".into()), extract: None },
+    );
+    let ctx = EvalCtx { now: NOW, vars: Some(&dicts) };
+    let found = |name: &str, file: &str| Condition::Var { name: name.into(), found: true }.matches_meta(&FileMeta::new(file, "/", 1, NOW, NOW), &ctx);
+    assert!(found("Year", "/r/report 2026.pdf"));
+    assert!(!found("Year", "/r/report.pdf"), "the default value does not count as found");
+    assert!(found("Kind", "/r/a.DOCX"));
+    assert!(!found("Kind", "/r/a.jpg"));
+    assert!(!found("Unknown", "/r/a.jpg"));
+    let not = Condition::Var { name: "Year".into(), found: false };
+    assert!(not.matches_meta(&FileMeta::new("/r/x.pdf", "/", 1, NOW, NOW), &ctx));
 }
