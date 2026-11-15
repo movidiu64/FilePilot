@@ -1,15 +1,15 @@
-# Build Rust
+# Rust build output
 /target/
 
-# Fișiere generate de Tauri la compilare
+# Files Tauri generates while building
 /crates/app/gen/
 
-# Date locale (baze de date de test, fișiere temporare)
+# Local data (test databases, temporary files)
 *.db
 *.db-wal
 *.db-shm
 *.orgrules.tmp
 
-# Daemonul copiat pentru instalator (vezi .github/workflows/windows.yml)
+# The daemon copied for the installer (see .github/workflows/windows.yml) and local installers
 /crates/app/binaries/
 /dist/
