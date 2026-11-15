@@ -12,6 +12,7 @@ If-then rules for Windows: sort downloads, clean up duplicates, archive, back up
 [![Release](https://img.shields.io/github/v/release/movidiu64/FilePilot)](https://github.com/movidiu64/FilePilot/releases/latest)
 [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows&logoColor=white)](https://github.com/movidiu64/FilePilot/releases/latest)
 ![UI: English | Română](https://img.shields.io/badge/UI-English%20%7C%20Rom%C3%A2n%C4%83-lightgrey)
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-ovidiu64-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/ovidiu64)
 
 <img src="docs/screenshot.png" alt="FilePilot home page with status, confirmations, recent actions and the last 7 days" width="100%">
 
@@ -64,6 +65,10 @@ cd crates\app; npx @tauri-apps/cli@2 build --config tauri.bundle.json --bundles 
 ```
 
 Every push runs the tests on Windows, builds the installer and tests it end to end (upgrade from the previous version, update with the daemon running, uninstall). A new version number on `main` publishes the release. See [Releasing](docs/guide.md#releasing).
+
+## Support
+
+FilePilot is free and has no ads or telemetry. If it saves you time, you can [buy me a coffee](https://buymeacoffee.com/ovidiu64) ☕. Bug reports and ideas in [Issues](https://github.com/movidiu64/FilePilot/issues) help just as much.
 
 ## Contributing
 
