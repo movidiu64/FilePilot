@@ -40,6 +40,10 @@ pub enum Action {
     Command { line: Template },
     /// Acțiunile următoare așteaptă confirmarea din fereastră (Aprobă / Respinge).
     Confirm,
+    /// Extracts the archive into a new folder (`dest`, usually `{folder}\{name}`). The archive
+    /// stays where it is, so the next actions still work on it. If the folder already exists,
+    /// `conflict` is `Skip` (do nothing) or anything else (a new folder `name_2`).
+    Extract { dest: Template, conflict: Conflict },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,7 +113,7 @@ impl Rule {
     pub fn renders_content(&self, dicts: &HashMap<String, Dictionary>) -> bool {
         let uses = |t: &Template| t.named().any(|n| dicts.get(n).is_some_and(|d| d.field == TextField::Content));
         self.actions.iter().any(|a| match a {
-            Action::Move { dest, .. } | Action::Copy { dest, .. } => uses(dest),
+            Action::Move { dest, .. } | Action::Copy { dest, .. } | Action::Extract { dest, .. } => uses(dest),
             Action::Rename { name, .. } => uses(name),
             Action::ChangeExtension { ext } => uses(ext),
             Action::Run { program, args } => uses(program) || args.iter().any(uses),

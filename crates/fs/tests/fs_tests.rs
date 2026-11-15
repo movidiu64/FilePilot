@@ -207,3 +207,155 @@ fn hash_file_on_disk_matches_the_print_of_the_content() {
     assert_eq!(m.hash_file(Path::new("/x.bin")).unwrap(), fingerprint(&data));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------- archives with the system tar ----------
+
+/// A minimal ustar archive: (name, content) per file.
+fn tar_bytes(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (name, data) in files {
+        let mut h = [0u8; 512];
+        h[..name.len()].copy_from_slice(name.as_bytes());
+        h[100..108].copy_from_slice(b"0000644\0");
+        h[108..116].copy_from_slice(b"0000000\0");
+        h[116..124].copy_from_slice(b"0000000\0");
+        h[124..136].copy_from_slice(format!("{:011o}\0", data.len()).as_bytes());
+        h[136..148].copy_from_slice(b"14000000000\0");
+        h[148..156].copy_from_slice(b"        ");
+        h[156] = b'0';
+        h[257..263].copy_from_slice(b"ustar\0");
+        h[263..265].copy_from_slice(b"00");
+        let sum: u32 = h.iter().map(|&b| u32::from(b)).sum();
+        h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        out.extend_from_slice(&h);
+        out.extend_from_slice(data);
+        out.resize(out.len().div_ceil(512) * 512, 0);
+    }
+    out.resize(out.len() + 1024, 0);
+    out
+}
+
+fn temp_dir(tag: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("org-unpack-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[test]
+fn std_fs_unpacks_a_tar_archive() {
+    let base = temp_dir("tar");
+    let archive = base.join("photos.tar");
+    std::fs::write(&archive, tar_bytes(&[("a.txt", b"hello"), ("sub/b.txt", b"world!")])).unwrap();
+    let into = base.join("out");
+    std::fs::create_dir(&into).unwrap();
+    let mut fs = StdFs;
+    match fs.unpack(&archive, &into) {
+        Err(e) if e.kind() == io::ErrorKind::Unsupported => return, // no tar on this system
+        r => r.unwrap(),
+    }
+    assert_eq!(std::fs::read(into.join("a.txt")).unwrap(), b"hello");
+    assert_eq!(std::fs::read(into.join("sub").join("b.txt")).unwrap(), b"world!");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn std_fs_never_writes_outside_the_target() {
+    let base = temp_dir("escape");
+    let archive = base.join("evil.tar");
+    std::fs::write(&archive, tar_bytes(&[("../escaped.txt", b"x"), ("ok.txt", b"y")])).unwrap();
+    let into = base.join("out");
+    std::fs::create_dir(&into).unwrap();
+    // bsdtar (Windows) refuses the archive; GNU tar strips the `../`. Either way nothing
+    // lands next to the target folder.
+    let _ = StdFs.unpack(&archive, &into);
+    assert!(!base.join("escaped.txt").exists());
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn std_fs_reports_a_damaged_archive() {
+    let base = temp_dir("broken");
+    let archive = base.join("broken.zip");
+    std::fs::write(&archive, b"this is not an archive at all").unwrap();
+    let into = base.join("out");
+    std::fs::create_dir(&into).unwrap();
+    let r = StdFs.unpack(&archive, &into);
+    assert!(r.is_err());
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[cfg(windows)]
+fn crc32(data: &[u8]) -> u32 {
+    let mut c = !0u32;
+    for &b in data {
+        c ^= u32::from(b);
+        for _ in 0..8 {
+            c = if c & 1 != 0 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 };
+        }
+    }
+    !c
+}
+
+/// A ZIP with stored (uncompressed) entries, as Explorer and browsers produce them.
+#[cfg(windows)]
+fn zip_bytes(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let (mut out, mut central) = (Vec::new(), Vec::new());
+    for (name, data) in files {
+        let (crc, len, off) = (crc32(data), data.len() as u32, out.len() as u32);
+        let common = |v: &mut Vec<u8>| {
+            v.extend_from_slice(&20u16.to_le_bytes()); // version needed
+            v.extend_from_slice(&0u16.to_le_bytes()); // flags
+            v.extend_from_slice(&0u16.to_le_bytes()); // stored
+            v.extend_from_slice(&0u16.to_le_bytes()); // time
+            v.extend_from_slice(&0x5b6fu16.to_le_bytes()); // date 2025-11-15
+            v.extend_from_slice(&crc.to_le_bytes());
+            v.extend_from_slice(&len.to_le_bytes());
+            v.extend_from_slice(&len.to_le_bytes());
+            v.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            v.extend_from_slice(&0u16.to_le_bytes()); // extra
+        };
+        out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+        common(&mut out);
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(data);
+        central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+        central.extend_from_slice(&20u16.to_le_bytes()); // version made by
+        common(&mut central);
+        central.extend_from_slice(&[0u8; 8]); // comment, disk, internal and external attributes
+        central.extend_from_slice(&[0u8; 2]);
+        central.extend_from_slice(&off.to_le_bytes());
+        central.extend_from_slice(name.as_bytes());
+    }
+    let (cd_off, cd_len, n) = (out.len() as u32, central.len() as u32, files.len() as u16);
+    out.extend_from_slice(&central);
+    out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+    out.extend_from_slice(&[0u8; 4]);
+    out.extend_from_slice(&n.to_le_bytes());
+    out.extend_from_slice(&n.to_le_bytes());
+    out.extend_from_slice(&cd_len.to_le_bytes());
+    out.extend_from_slice(&cd_off.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out
+}
+
+#[cfg(windows)]
+#[test]
+fn std_fs_unpacks_a_zip_with_the_windows_tar() {
+    let base = temp_dir("zip");
+    let archive = base.join("photos.zip");
+    std::fs::write(&archive, zip_bytes(&[("a.txt", b"hello"), ("sub/b.txt", b"world!")])).unwrap();
+    let into = base.join("out");
+    std::fs::create_dir(&into).unwrap();
+    StdFs.unpack(&archive, &into).unwrap();
+    assert_eq!(std::fs::read(into.join("a.txt")).unwrap(), b"hello");
+    assert_eq!(std::fs::read(into.join("sub").join("b.txt")).unwrap(), b"world!");
+
+    let evil = base.join("evil.zip");
+    std::fs::write(&evil, zip_bytes(&[("../escaped.txt", b"x")])).unwrap();
+    let into2 = base.join("out2");
+    std::fs::create_dir(&into2).unwrap();
+    assert!(StdFs.unpack(&evil, &into2).is_err(), "a path with .. must fail the extraction");
+    assert!(!base.join("escaped.txt").exists());
+    let _ = std::fs::remove_dir_all(&base);
+}

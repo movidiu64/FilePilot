@@ -31,6 +31,7 @@ fn sample_rules() -> Vec<Rule> {
             ]),
             actions: vec![
                 Action::Copy { dest: t("D:\\bk"), conflict: Conflict::Overwrite, keep_structure: true, then_target: false },
+                Action::Extract { dest: t("{folder}\\{name}"), conflict: Conflict::Skip },
                 Action::Move {
                     dest: t("D:\\Facturi\\{created:AAAA}\\{var:Furnizor}"),
                     conflict: Conflict::Skip,
@@ -273,4 +274,13 @@ fn hidden_rules_come_back_in_place_when_saving_locked() {
     assert_eq!(ids.len(), 6);
     // Fără reguli pe disc: rămân cele din fereastră.
     assert_eq!(merge_hidden(vec![mk(5, "n", false)], &[]).len(), 1);
+}
+
+/// The example shipped in the repository stays importable.
+#[test]
+fn the_example_rules_file_imports() {
+    let b = import(include_str!("../../../examples/downloads.orgrules")).unwrap();
+    assert_eq!(b.rules.len(), 3);
+    assert!(b.rules.iter().all(|r| !r.enabled && r.simulate));
+    assert!(matches!(b.rules[0].actions[0], Action::Extract { .. }));
 }

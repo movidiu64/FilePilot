@@ -107,6 +107,11 @@ impl Fs for DryFs<'_> {
     }
 
     fn rename(&mut self, from: &Path, to: &Path) -> io::Result<()> {
+        // Only folders created in the simulation itself (e.g. an extraction) can be renamed.
+        if self.dirs.remove(from) {
+            self.dirs.insert(to.to_path_buf());
+            return Ok(());
+        }
         let st = self.metadata(from)?;
         let real = self.real(from);
         self.gone(from)?;
@@ -157,5 +162,11 @@ impl Fs for DryFs<'_> {
 
     fn run_shell(&mut self, _line: &str) -> io::Result<i32> {
         Ok(0)
+    }
+
+    /// The preview does not open archives: the folder stays empty.
+    fn unpack(&mut self, archive: &Path, into: &Path) -> io::Result<()> {
+        self.metadata(archive).map(|_| ())?;
+        if self.dirs.contains(into) { Ok(()) } else { Err(io::Error::from(io::ErrorKind::NotFound)) }
     }
 }

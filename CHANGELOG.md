@@ -3,6 +3,15 @@
 All notable changes to FilePilot are listed here. Versions follow [Semantic Versioning](https://semver.org/):
 a new major version may need you to review your rules, minor versions add features, patches fix bugs.
 
+## [Unreleased]
+
+## [1.1.0] - 2026-11-15
+
+### Added
+- **Extract archive** action: ZIP, RAR, 7z, TAR and more, with the extractor built into Windows. Extracts into a new folder named after the archive (a single top folder is not nested again), only shows the folder once it is complete, refuses entries that would escape it, and can be undone from the journal. The archive stays, so the next action can send it to the Recycle Bin.
+- Template and setup-guide choice: *Extract downloaded archives*.
+- An example rules file in English, `examples/downloads.orgrules`, to import and adapt.
+
 ## [1.0.0] - 2026-11-15
 
 First stable release, and the first one under the name **FilePilot** (formerly *Organizator*). Licensed under the GNU GPL v3.

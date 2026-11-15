@@ -188,20 +188,70 @@ impl Fs for StdFs {
         };
         run_command(cmd)
     }
+
+    /// Uses the `tar` that ships with Windows 10 and 11 (bsdtar / libarchive): ZIP, RAR, 7z,
+    /// tar, gz, bz2, xz, CAB, ISO. It refuses absolute paths and `..` in entry names. Elsewhere
+    /// the system `tar` is used (GNU tar: tar formats only).
+    fn unpack(&mut self, archive: &Path, into: &Path) -> io::Result<()> {
+        #[cfg(windows)]
+        let tar = {
+            // The full path, so a `tar.exe` placed in the current folder or on PATH is never used.
+            let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+            std::path::PathBuf::from(root).join("System32").join("tar.exe")
+        };
+        #[cfg(not(windows))]
+        let tar = std::path::PathBuf::from("tar");
+        let mut cmd = Command::new(&tar);
+        cmd.arg("-x").arg("-f").arg(archive).arg("-C").arg(into);
+        let size = fs::metadata(archive)?.len();
+        // Generous: the slowest realistic case is a slow USB stick or network share.
+        let limit = Duration::from_secs(600) + Duration::from_secs(size / (2 << 20));
+        match run_tool(cmd, limit) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                Err(io::Error::new(io::ErrorKind::Unsupported, format!("{} was not found", tar.display())))
+            }
+            other => other,
+        }
+    }
 }
 
-/// Pornește comanda fără fereastră și fără intrare; o așteaptă cel mult `RUN_TIMEOUT`.
-fn run_command(mut cmd: Command) -> io::Result<i32> {
+/// Runs a helper program to completion: no window, no console (so it can never wait for
+/// input, e.g. a password prompt), at most `limit`. A non-zero exit code becomes an error
+/// with the end of what the program wrote to stderr.
+fn run_tool(mut cmd: Command, limit: Duration) -> io::Result<()> {
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        cmd.creation_flags(0x0000_0008); // DETACHED_PROCESS
     }
     let mut child = cmd.spawn()?;
-    // Ieșirea de eroare se citește pe alt fir, ca programul să nu se blocheze scriind.
-    let pipe = child.stderr.take();
-    let reader = std::thread::spawn(move || {
+    let reader = stderr_tail(child.stderr.take());
+    let deadline = Instant::now() + limit;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            if status.success() {
+                return Ok(());
+            }
+            let err = reader.join().unwrap_or_default();
+            let text = String::from_utf8_lossy(&err);
+            let text = text.trim();
+            let code = status.code().unwrap_or(-1);
+            return Err(io::Error::other(if text.is_empty() { format!("exit code {code}") } else { text.to_string() }));
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "extraction took too long and was stopped"));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Reads a pipe on another thread (so the program never blocks writing to it) and keeps
+/// the last [`ERR_TAIL`] bytes.
+fn stderr_tail(pipe: Option<std::process::ChildStderr>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
         let mut tail = Vec::new();
         if let Some(mut p) = pipe {
             let mut chunk = [0u8; 4096];
@@ -216,7 +266,20 @@ fn run_command(mut cmd: Command) -> io::Result<i32> {
             }
         }
         tail
-    });
+    })
+}
+
+/// Pornește comanda fără fereastră și fără intrare; o așteaptă cel mult `RUN_TIMEOUT`.
+fn run_command(mut cmd: Command) -> io::Result<i32> {
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd.spawn()?;
+    // Ieșirea de eroare se citește pe alt fir, ca programul să nu se blocheze scriind.
+    let reader = stderr_tail(child.stderr.take());
     let deadline = Instant::now() + RUN_TIMEOUT;
     loop {
         if let Some(status) = child.try_wait()? {

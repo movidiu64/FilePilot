@@ -46,9 +46,12 @@ fn download_in_progress(fs: &dyn Fs, path: &Path) -> bool {
 }
 
 pub fn is_temp_download(path: &Path) -> bool {
-    path.extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase())
-        .is_some_and(|e| TEMP_EXTENSIONS.contains(&e.as_str()))
+    // A folder FilePilot is still extracting an archive into counts as a download in progress.
+    org_fs::in_part_folder(path)
+        || path
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .is_some_and(|e| TEMP_EXTENSIONS.contains(&e.as_str()))
 }
 
 /// Un fișier e stabil când dimensiunea și data modificării nu s-au schimbat de cel

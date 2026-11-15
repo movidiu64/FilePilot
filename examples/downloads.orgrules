@@ -1,0 +1,64 @@
+{
+  "app": "filepilot",
+  "schema_version": 1,
+  "rules": [
+    {
+      "name": "Extract downloaded archives",
+      "enabled": false,
+      "simulate": true,
+      "folders": [{ "path": "C:\\Users\\you\\Downloads", "recursive": false }],
+      "condition": {
+        "type": "any",
+        "items": [
+          { "type": "text", "field": "extension", "op": "is", "value": "zip" },
+          { "type": "text", "field": "extension", "op": "is", "value": "rar" },
+          { "type": "text", "field": "extension", "op": "is", "value": "7z" }
+        ]
+      },
+      "actions": [
+        { "type": "extract", "dest": "{folder}\\{name}", "conflict": "rename" },
+        { "type": "trash", "remove_empty": false }
+      ]
+    },
+    {
+      "name": "PDF invoices by year and month",
+      "enabled": false,
+      "simulate": true,
+      "folders": [{ "path": "C:\\Users\\you\\Downloads", "recursive": false }],
+      "condition": {
+        "type": "all",
+        "items": [
+          { "type": "text", "field": "extension", "op": "is", "value": "pdf" },
+          { "type": "text", "field": "name", "op": "contains", "value": "invoice" }
+        ]
+      },
+      "actions": [
+        { "type": "move", "dest": "Invoices\\{modified:AAAA}\\{modified:LL}", "conflict": "rename" }
+      ]
+    },
+    {
+      "name": "Sort Downloads by type",
+      "enabled": false,
+      "simulate": true,
+      "folders": [{ "path": "C:\\Users\\you\\Downloads", "recursive": false }],
+      "condition": { "type": "all_files" },
+      "actions": [
+        { "type": "move", "dest": "{var:FileType}", "conflict": "dedupe" }
+      ]
+    }
+  ],
+  "dictionaries": {
+    "FileType": {
+      "field": "extension",
+      "entries": [
+        ["pdf, doc, docx, xls, xlsx, ppt, pptx, odt, ods, txt, csv", "Documents"],
+        ["jpg, jpeg, png, gif, webp, heic, svg", "Images"],
+        ["mp4, mkv, avi, mov, webm", "Video"],
+        ["mp3, flac, wav, m4a, ogg", "Music"],
+        ["zip, rar, 7z, tar, gz", "Archives"],
+        ["exe, msi", "Programs"]
+      ],
+      "default": "Other"
+    }
+  }
+}

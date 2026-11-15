@@ -154,6 +154,11 @@ fn action_to_value(a: &Action) -> Value {
         Action::ChangeExtension { ext } => obj(vec![("type", s("change_extension")), ("ext", s(&ext.to_source()))]),
         Action::Trash { remove_empty } => obj(vec![("type", s("trash")), ("remove_empty", Value::Bool(*remove_empty))]),
         Action::Confirm => obj(vec![("type", s("confirm"))]),
+        Action::Extract { dest, conflict } => obj(vec![
+            ("type", s("extract")),
+            ("dest", s(&dest.to_source())),
+            ("conflict", s(conflict_name(*conflict))),
+        ]),
         Action::Delete { remove_empty } => obj(vec![("type", s("delete")), ("remove_empty", Value::Bool(*remove_empty))]),
         Action::Command { line } => obj(vec![("type", s("command")), ("line", s(&line.to_source()))]),
         Action::Run { program, args } => obj(vec![
@@ -384,6 +389,7 @@ fn action_from(v: &Value) -> R<Action> {
         "change_extension" => Action::ChangeExtension { ext: tpl(o, "ext", ctx)? },
         "trash" => Action::Trash { remove_empty: opt_bool(o, "remove_empty", false, ctx)? },
         "confirm" => Action::Confirm,
+        "extract" => Action::Extract { dest: tpl(o, "dest", ctx)?, conflict: parse_conflict(o, ctx)? },
         "delete" => Action::Delete { remove_empty: opt_bool(o, "remove_empty", false, ctx)? },
         "run" => {
             let Some(Value::Arr(args)) = get(o, "args") else { return bad(ctx, "„args” lipsește") };

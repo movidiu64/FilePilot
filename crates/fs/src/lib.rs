@@ -80,6 +80,40 @@ pub trait Fs {
     fn run(&mut self, program: &str, args: &[String]) -> io::Result<i32>;
     /// Rulează o linie de comandă prin shell (`cmd /D /S /C` pe Windows, `sh -c` în rest).
     fn run_shell(&mut self, line: &str) -> io::Result<i32>;
+    /// Extracts `archive` (ZIP, RAR, 7z, tar…) into `into`, an existing empty folder.
+    /// Entries that would land outside `into` are refused.
+    fn unpack(&mut self, archive: &Path, into: &Path) -> io::Result<()> {
+        let _ = (archive, into);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "archive extraction is not available"))
+    }
+    /// Deletes a folder and everything in it. Links are removed, never followed.
+    fn remove_tree(&mut self, p: &Path) -> io::Result<()> {
+        for e in self.list_dir(p)? {
+            if e.is_dir {
+                self.remove_tree(&e.path)?;
+            } else {
+                self.remove_file(&e.path)?;
+            }
+        }
+        self.remove_dir_if_empty(p).map(|_| ())
+    }
+}
+
+/// Suffix of the folder an archive is extracted into before it gets its final name. The
+/// engine ignores everything inside such a folder.
+pub const PART_SUFFIX: &str = ".filepilot-part";
+
+/// Where the archive for `target` is extracted first (`target` + [`PART_SUFFIX`], next to it,
+/// so the final rename stays on the same volume).
+pub fn part_path(target: &Path) -> PathBuf {
+    let mut s = target.as_os_str().to_owned();
+    s.push(PART_SUFFIX);
+    PathBuf::from(s)
+}
+
+/// Is the path inside a folder that is still being extracted?
+pub fn in_part_folder(p: &Path) -> bool {
+    p.components().any(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase().ends_with(PART_SUFFIX))
 }
 
 /// Primul nume liber: `invoice.docx` devine `invoice_2.docx`, apoi `invoice_3.docx`.

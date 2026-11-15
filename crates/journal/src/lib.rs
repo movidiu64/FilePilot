@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use org_fs::{move_file, unique_path, Fs};
+use org_fs::{move_file, part_path, unique_path, Fs};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpKind {
@@ -20,6 +20,8 @@ pub enum OpKind {
     Trash,
     Delete,
     Run,
+    /// `src` is the archive, `dst` the folder it was extracted into.
+    Extract,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,6 +279,19 @@ pub fn recover(fs: &mut dyn Fs, j: &mut dyn Journal) -> Vec<(u64, Status)> {
                 }
             }
             OpKind::Run => Status::Failed("rezultat necunoscut după întrerupere".into()),
+            // The folder gets its final name in one rename at the very end: if it is there, the
+            // extraction finished. Otherwise the half-extracted folder is thrown away.
+            OpKind::Extract => match &dst {
+                Some(_) if dst_exists => Status::Done,
+                Some(d) => {
+                    let part = part_path(d);
+                    if fs.exists(&part) {
+                        let _ = fs.remove_tree(&part);
+                    }
+                    Status::Failed("extraction interrupted; the partial folder was removed".into())
+                }
+                None => Status::Failed("întreruptă înainte de început".into()),
+            },
         };
         j.finish(e.id, status.clone());
         out.push((e.id, status));
@@ -354,6 +369,24 @@ pub fn undo(fs: &mut dyn Fs, j: &mut dyn Journal, id: u64, force: bool) -> io::R
                 Err(_) => return Ok(UndoOutcome::Unrecoverable("fișierul nu mai e în Coș")),
             }
         }
+        OpKind::Extract => {
+            let dir = e.dst.clone().expect("extraction has a folder");
+            if !fs.exists(&dir) {
+                return Ok(UndoOutcome::Unrecoverable("the extracted folder no longer exists"));
+            }
+            // Extracted files keep the dates from the archive: anything newer than the
+            // operation was changed or added since.
+            if !force && changed_since(fs, &dir, e.ts) {
+                return Ok(UndoOutcome::NeedsConfirmation("files in the extracted folder changed since"));
+            }
+            match fs.trash(&dir) {
+                Err(err) if err.kind() == io::ErrorKind::Unsupported => fs.remove_tree(&dir)?,
+                other => other?,
+            }
+            // The archive itself never moved: it is what "comes back", so the rule does not
+            // extract it again on its own.
+            UndoOutcome::Restored(e.src.clone())
+        }
         OpKind::Delete => return Ok(UndoOutcome::Unrecoverable("șters definitiv")),
         OpKind::Run => return Ok(UndoOutcome::NotUndoable),
     };
@@ -361,6 +394,18 @@ pub fn undo(fs: &mut dyn Fs, j: &mut dyn Journal, id: u64, force: bool) -> io::R
         j.mark_undone(id, p);
     }
     Ok(outcome)
+}
+
+/// Does the folder hold a file modified after `ts` (or one that cannot be read)?
+fn changed_since(fs: &dyn Fs, dir: &Path, ts: i64) -> bool {
+    let Ok(entries) = fs.list_dir(dir) else { return true };
+    entries.iter().any(|e| {
+        if e.is_dir {
+            changed_since(fs, &e.path, ts)
+        } else {
+            fs.metadata(&e.path).map_or(true, |m| m.modified > ts)
+        }
+    })
 }
 
 /// Anulează toate operațiile unei rulări, în ordine inversă.

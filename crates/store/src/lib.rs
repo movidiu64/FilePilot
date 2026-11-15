@@ -177,6 +177,7 @@ fn kind_name(k: OpKind) -> &'static str {
         OpKind::Trash => "trash",
         OpKind::Delete => "delete",
         OpKind::Run => "run",
+        OpKind::Extract => "extract",
     }
 }
 
@@ -189,6 +190,7 @@ fn kind_from(s: &str) -> Option<OpKind> {
         "trash" => OpKind::Trash,
         "delete" => OpKind::Delete,
         "run" => OpKind::Run,
+        "extract" => OpKind::Extract,
         _ => return None,
     })
 }

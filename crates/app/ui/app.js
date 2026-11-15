@@ -513,7 +513,7 @@ function ruleIssues(r) {
       if (e) err(a, field, e);
     };
     switch (a.type) {
-      case 'move': case 'copy': tpl('dest', true, 'issEmptyDest'); break;
+      case 'move': case 'copy': case 'extract': tpl('dest', true, 'issEmptyDest'); break;
       case 'rename': tpl('name', true, 'issEmptyName'); break;
       case 'change_extension': tpl('ext', true, 'issEmptyExt'); break;
       case 'command': tpl('line', true, 'issEmptyCommand'); break;
@@ -614,12 +614,17 @@ const TEMPLATES = [
     folders: dl ? [{ path: dl, recursive: false }] : [],
     condition: { type: 'all', items: [{ type: 'duplicate', is: true }] },
     actions: [{ type: 'confirm' }, { type: 'trash', remove_empty: false }] }) },
+  { key: 'extract', make: (dl) => ({ name: t('tplExtract'), enabled: false, hidden: false, continue_after_move: false,
+    folders: dl ? [{ path: dl, recursive: false }] : [],
+    condition: { type: 'any', items: [extIs('zip'), extIs('rar'), extIs('7z')] },
+    actions: [{ type: 'extract', dest: EXTRACT_HERE, conflict: 'rename' }, { type: 'trash', remove_empty: false }] }) },
   { key: 'backup', make: () => ({ name: t('tplBackup'), enabled: false, hidden: false, continue_after_move: true,
     folders: [], condition: { type: 'all_files' },
     actions: [{ type: 'copy', dest: '', conflict: 'overwrite', keep_structure: true, then_target: false }] }) },
 ];
 const TPL_TEXT = { empty: ['tplEmpty', 'tplEmptyDesc'], sort: ['tplSort', 'tplSortDesc'], old: ['tplOld', 'tplOldDesc'],
   invoices: ['tplInvoices', 'tplInvoicesDesc'], cleanup: ['tplCleanup', 'tplCleanupDesc'], dupes: ['tplDupes', 'tplDupesDesc'],
+  extract: ['tplExtract', 'tplExtractDesc'],
   backup: ['tplBackup', 'tplBackupDesc'] };
 
 function templateModal() {
@@ -1020,8 +1025,12 @@ function defaultAction(type) {
     case 'run': return { type, program: '', args: [] };
     case 'command': return { type, line: '' };
     case 'confirm': return { type };
+    case 'extract': return { type, dest: EXTRACT_HERE, conflict: 'rename' };
   }
 }
+
+/// Default extraction folder: next to the archive, named after it.
+const EXTRACT_HERE = '{folder}\\{name}';
 
 // ---------- șabloane: inserare de variabile ----------
 function tplVariables() {
@@ -1214,7 +1223,7 @@ function renderGroup(node, depth, parent, index) {
 
 // ---------- acțiuni ----------
 const ACTION_TYPES = [['move', 'actMove'], ['copy', 'actCopy'], ['rename', 'actRename'], ['change_extension', 'actChangeExt'],
-  ['trash', 'actTrash'], ['delete', 'actDelete'], ['command', 'actCommand'], ['run', 'actRun'], ['confirm', 'actConfirm']];
+  ['extract', 'actExtract'], ['trash', 'actTrash'], ['delete', 'actDelete'], ['command', 'actCommand'], ['run', 'actRun'], ['confirm', 'actConfirm']];
 const CONFLICTS = () => [['rename', t('conflictRename')], ['dedupe', t('conflictDedupe')], ['skip', t('conflictSkip')], ['overwrite', t('conflictOverwrite')]];
 const ACTION_LABEL = Object.fromEntries(ACTION_TYPES);
 
@@ -1239,6 +1248,13 @@ function renderAction(a, i) {
       body.push(field(a, 'name', h('label', { class: 'lbl' }, t('newName'), tplInput(a.name, set('name'), t('newName')))));
       body.push(h('div', { class: 'row wrap' }, h('span', { class: 'muted' }, t('ifExists')),
         select(CONFLICTS(), a.conflict, (v) => { a.conflict = v; markDirty(); }, t('ifExists')), conflictInfo()));
+      break;
+    case 'extract':
+      body.push(field(a, 'dest', h('label', { class: 'lbl' }, t('extractTo'), tplInput(a.dest, set('dest'), t('extractTo'), false, 'dir'))));
+      body.push(h('p', { class: 'hint' }, t('extractHint')));
+      body.push(h('div', { class: 'row wrap' }, h('span', { class: 'muted' }, t('ifFolderExists')),
+        select([['rename', t('conflictNewFolder')], ['skip', t('conflictSkipFolder')]], a.conflict === 'skip' ? 'skip' : 'rename',
+          (v) => { a.conflict = v; markDirty(); }, t('ifFolderExists'))));
       break;
     case 'change_extension':
       body.push(field(a, 'ext', h('label', { class: 'lbl' }, t('newExt'), tplInput(a.ext, set('ext'), t('newExt')))));
@@ -1384,6 +1400,8 @@ function planText(f) {
     return [before + t('resultAwaiting'), 'wait-text', f.duplicate_of ? t('duplicateOf', { path: f.duplicate_of }) : ''];
   }
   const last = p.ops.length ? p.ops[p.ops.length - 1] : null;
+  const ext = p.ops.find((o) => o.kind === 'extract');
+  if (ext) return [t(p.gone ? 'resultExtractTrash' : 'resultExtract', { dst: tailPath(ext.dst, 60) }), 'mono', ext.dst];
   if (p.gone) return [last && last.kind === 'delete' ? t('resultDelete') : t('resultTrash'), last && last.kind === 'delete' ? 'bad' : '', ''];
   if (p.dest) return ['→ ' + tailPath(p.dest), 'mono', p.dest];
   const copy = p.ops.find((o) => o.kind === 'copy');
@@ -1599,6 +1617,7 @@ function actionWords(a) {
     case 'command': return t('sCommand');
     case 'run': return t('sRun', { p: a.program ? lastSeg(a.program) : '…' });
     case 'confirm': return t('sConfirm');
+    case 'extract': return a.dest === EXTRACT_HERE ? t('sExtractHere') : t('sExtract', { d: quote(a.dest ? lastSeg(a.dest) : '…') });
     default: return '…';
   }
 }
@@ -1719,9 +1738,9 @@ function renderRulesTab() {
 }
 
 // ---------- fila Jurnal ----------
-const OP_LABEL = { move: 'opMove', copy: 'opCopy', rename: 'opRename', change_ext: 'opChangeExt', trash: 'opTrash', delete: 'opDelete', run: 'opRun' };
+const OP_LABEL = { move: 'opMove', copy: 'opCopy', rename: 'opRename', change_ext: 'opChangeExt', trash: 'opTrash', delete: 'opDelete', run: 'opRun', extract: 'opExtract' };
 const ST_LABEL = { done: 'stDone', failed: 'stFailed', undone: 'stUndone', in_progress: 'stInProgress', simulated: 'stSimulated' };
-const UNDOABLE = new Set(['move', 'copy', 'rename', 'change_ext', 'trash']);
+const UNDOABLE = new Set(['move', 'copy', 'rename', 'change_ext', 'trash', 'extract']);
 
 const JPAGE = 100;
 const PERIOD_DAYS = { today: 0, '7d': 7, '30d': 30 };
@@ -2263,9 +2282,9 @@ function renderHomeTab() {
 }
 
 // ---------- ghidul de la prima pornire ----------
-const WIZ_PICKS = ['sort', 'dupes', 'old', 'invoices', 'cleanup'];
+const WIZ_PICKS = ['sort', 'dupes', 'extract', 'old', 'invoices', 'cleanup'];
 /// Regulile speciale înaintea sortării generale (care ar lua orice fișier).
-const WIZ_ORDER = ['cleanup', 'dupes', 'invoices', 'old', 'sort'];
+const WIZ_ORDER = ['cleanup', 'dupes', 'extract', 'invoices', 'old', 'sort'];
 
 function markOnboarded() { try { localStorage.setItem('onboarded', '1'); } catch (_) { /* fără stocare */ } }
 function onboarded() { try { return localStorage.getItem('onboarded') === '1'; } catch (_) { return true; } }

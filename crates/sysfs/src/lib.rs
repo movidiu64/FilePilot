@@ -87,6 +87,9 @@ impl Fs for SysFs {
     fn run_shell(&mut self, line: &str) -> io::Result<i32> {
         StdFs.run_shell(line)
     }
+    fn unpack(&mut self, archive: &Path, into: &Path) -> io::Result<()> {
+        StdFs.unpack(archive, into)
+    }
 
     fn trash(&mut self, p: &Path) -> io::Result<()> {
         trash::delete(p).map_err(other)

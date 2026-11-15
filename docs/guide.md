@@ -6,6 +6,7 @@ FilePilot watches folders and applies *if–then* rules to the files that appear
 - [Rules](#rules)
 - [Conditions](#conditions)
 - [Actions](#actions)
+- [Archives](#archives)
 - [Variables](#variables)
 - [Duplicates](#duplicates)
 - [Confirmations](#confirmations)
@@ -48,7 +49,7 @@ A file is processed the first time FilePilot sees it and again every time it cha
 
 **New rule** offers templates: sort Downloads by type, archive files older than 30 days, PDF invoices by year and month, clean up temporary files, duplicate downloads, backup copy. On first start, when there are no rules yet, a short guide asks which folder to watch and what to do with it, then shows how many files match right now. The rules it creates start in simulation mode. It can be run again from Home → Rules → *Setup guide*.
 
-Rules can be exported to and imported from `.orgrules` files (plain JSON). Each rule can also be edited as JSON from its menu.
+Rules can be exported to and imported from `.orgrules` files (plain JSON). Each rule can also be edited as JSON from its menu. [`examples/downloads.orgrules`](../examples/downloads.orgrules) has three ready rules (extract archives, PDF invoices, sort by type) to import: they arrive stopped and in simulation, with `C:\Users\you\Downloads` as the folder to change.
 
 ## Conditions
 
@@ -86,6 +87,7 @@ Conditions with *older than N days* are re-checked hourly, so files that grow ol
 | Run a program | Starts a program with arguments, without a shell, so arguments cannot inject commands. |
 | Run a command (cmd) | Runs a line through `cmd /C` (`copy`, `echo`, `>>`, `&&` work). Variable values are quoted, so a file name containing `&` or `>` cannot start another command. A non-zero exit code is logged as an error and is not retried automatically. |
 | Ask for confirmation | Stops the rule until you approve or reject; see [Confirmations](#confirmations). |
+| Extract archive | Extracts the archive into a new folder; see [Archives](#archives). |
 
 **If the file exists** at the destination:
 
@@ -98,6 +100,19 @@ Conditions with *older than N days* are re-checked hourly, so files that grow ol
 
 > [!WARNING]
 > A *Run a program* action with `{path}` as the program would start the very file the rule found. The editor warns about it: use a program that only reads the file (an antivirus, an archiver), or restrict the rule to safe extensions.
+
+## Archives
+
+**Extract archive** unpacks ZIP, RAR, 7z, TAR (also `.tar.gz`, `.tgz`, `.tar.xz`, `.tar.bz2`), CAB and ISO files with the `tar` built into Windows 10 and 11 (libarchive). Nothing extra needs to be installed.
+
+- The destination is a **new folder**, by default `{folder}\{name}`: next to the archive, named after it. If the archive holds a single top folder, its contents go straight into the destination (no `photos\photos\…`).
+- If the folder already exists, the archive goes into a new one (`photos_2`), or, with *Do not extract*, nothing happens. Files are never mixed into an existing folder.
+- Files are extracted into `<folder>.filepilot-part` first and the folder gets its final name only when everything succeeded, so a half-extracted folder never appears, not even after a power cut. Rules ignore files inside such a folder.
+- The archive itself stays where it is, so the next action can send it to the Recycle Bin. If extraction fails (damaged archive, password, not enough space), the next actions do not run and the archive is kept.
+- **Restore** in the journal sends the extracted folder to the Recycle Bin. If files in it changed after extraction, FilePilot asks first. The rule does not extract that archive again unless it changes or you mark it as pending.
+- Entries with absolute paths or `..` are refused: an archive cannot write outside its folder.
+
+Limits: password-protected archives cannot be extracted, nor RAR archives split into parts (`.part1.rar`, `.r00`); the later parts are skipped without an error. The formats that work depend on the `tar` in your Windows version: older Windows 10 builds may not read archives made by recent WinRAR versions (RAR5). If an archive fails, the journal shows the message from `tar`.
 
 ## Variables
 
@@ -168,7 +183,7 @@ The journal keeps 30, 90 (default) or 365 days, or everything (Settings). Old en
 - FilePilot never opens the files it finds with other programs and never runs them. The *in use* check is an open for reading; content is read by FilePilot's own parsers, written in Rust without `unsafe`. The only way a found file would start is a *Run a program* action configured on the file itself, and the editor warns about that.
 - The *downloaded from the internet* mark (Zone.Identifier) is kept when a file is moved on NTFS.
 - FilePilot's own files are never touched by rules, even inside a watched folder.
-- Overwrites and undone copies go through the Recycle Bin, so they can be undone as well.
+- Overwrites, undone copies and undone extractions go through the Recycle Bin, so they can be undone as well.
 
 ## Hidden rules
 
@@ -257,4 +272,4 @@ Versions follow [Semantic Versioning](https://semver.org/).
 2. Add a `## [x.y.z] - YYYY-MM-DD` section at the top of `CHANGELOG.md`.
 3. Commit and push to `main`.
 
-The Windows workflow checks that both version numbers match, runs the tests, builds the installer and tests it. If everything passes and `vx.y.z` has no release yet, it creates the tag and publishes a release named *FilePilot x.y.z* with the installer, a portable ZIP and the changelog section as release notes. A push to `main` without a new version only builds and tests; its files are kept as workflow artifacts for 2 days. Pushing a `vx.y.z` tag by hand works too, as long as it matches the version.
+The Windows workflow checks that both version numbers match, runs the tests, builds the installer and tests it. If everything passes and `vx.y.z` has no release yet, it creates the tag and publishes a release named *FilePilot x.y.z* with the installer, a portable ZIP and the changelog section as release notes. Pushes to other branches, and to `main` without a new version, only build and test; their installer and portable ZIP are kept as workflow artifacts for 2 days. Larger features are developed on a branch (`feature/…`) and merged into `main` once tested. Pushing a `vx.y.z` tag by hand works too, as long as it matches the version.

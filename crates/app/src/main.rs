@@ -771,6 +771,7 @@ fn kind_name(k: OpKind) -> &'static str {
         OpKind::Trash => "trash",
         OpKind::Delete => "delete",
         OpKind::Run => "run",
+        OpKind::Extract => "extract",
     }
 }
 
@@ -830,6 +831,7 @@ fn action_kind(a: &org_core::Action) -> &'static str {
         Run { .. } => "run",
         Command { .. } => "command",
         Confirm => "confirm",
+        Extract { .. } => "extract",
     }
 }
 

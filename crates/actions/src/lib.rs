@@ -7,7 +7,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use org_core::{safe_name, Action, Conflict, FileMeta, Mode, RenderCtx, Rule, Template};
-use org_fs::{move_file, remove_empty_parents, unique_path, Fs};
+use org_fs::{move_file, part_path, remove_empty_parents, unique_path, Fs};
 use org_journal::{Journal, MemJournal, NewEntry, OpKind, Status};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +71,54 @@ fn dest_dir(dest: &Template, cur: &FileMeta, rctx: &RenderCtx<'_>) -> Result<Pat
         })
         .collect();
     Ok(if dir.is_relative() { cur.root.join(dir) } else { dir })
+}
+
+/// The second and later volumes of a multi-volume RAR (`x.part2.rar`, `x.r00`): only the
+/// first volume can be extracted.
+fn later_volume(file_name: &str) -> Option<&'static str> {
+    let n = file_name.to_ascii_lowercase();
+    let old_style = n
+        .rsplit_once('.')
+        .is_some_and(|(_, e)| e.len() == 3 && e.starts_with('r') && e[1..].bytes().all(|b| b.is_ascii_digit()));
+    let part = n
+        .strip_suffix(".rar")
+        .and_then(|s| s.rsplit_once(".part"))
+        .and_then(|(_, num)| num.parse::<u32>().ok());
+    (old_style || part.is_some_and(|k| k > 1)).then_some("a later part of a multi-volume archive")
+}
+
+/// `dir_2`, `dir_3`… for a folder (the whole name is kept: `report.v2` → `report.v2_2`).
+fn unique_dir(fs: &dyn Fs, dir: &Path) -> PathBuf {
+    let name = dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    (2u64..).map(|n| dir.with_file_name(format!("{name}_{n}"))).find(|p| !fs.exists(p)).expect("unbounded")
+}
+
+/// Extracts into `target` + [`org_fs::PART_SUFFIX`] and renames it to `target` only when
+/// everything succeeded, so `target` never holds a half-extracted archive. An archive with a
+/// single top folder is not nested again: that folder's contents go straight into `target`.
+fn extract_into(fs: &mut dyn Fs, archive: &Path, target: &Path) -> io::Result<()> {
+    let part = part_path(target);
+    if fs.exists(&part) {
+        fs.remove_tree(&part)?; // left over from an interrupted extraction
+    }
+    fs.create_dir_all(&part)?;
+    let done = (|| {
+        fs.unpack(archive, &part)?;
+        let entries = fs.list_dir(&part)?;
+        let inner = match entries.as_slice() {
+            [only] if only.is_dir => only.path.clone(),
+            _ => part.clone(),
+        };
+        fs.rename(&inner, target)?;
+        if inner != part {
+            fs.remove_dir_if_empty(&part)?;
+        }
+        Ok(())
+    })();
+    if done.is_err() && fs.exists(&part) {
+        let _ = fs.remove_tree(&part);
+    }
+    done
 }
 
 struct Exec<'a> {
@@ -409,6 +457,22 @@ fn step_inner(
         }
         // Tratată în `run_rule_from`; aici doar ca potrivirea să fie completă.
         Action::Confirm => Ok(StepStatus::Awaiting),
+        Action::Extract { dest, conflict } => {
+            if let Some(why) = later_volume(&file_name) {
+                return Ok(StepStatus::Skipped(why));
+            }
+            let dir = dest_dir(dest, cur, rctx)?;
+            let target = if ex.fs.exists(&dir) {
+                match conflict {
+                    Conflict::Skip => return Ok(StepStatus::Skipped("the folder already exists")),
+                    _ => unique_dir(ex.fs, &dir),
+                }
+            } else {
+                dir
+            };
+            ex.journaled(OpKind::Extract, &src, Some(&target), |fs| extract_into(fs, &src, &target))?;
+            Ok(StepStatus::Done)
+        }
         Action::Run { program, args } => {
             let prog = render(program, cur, rctx, Mode::Raw)?;
             if prog.is_empty() {

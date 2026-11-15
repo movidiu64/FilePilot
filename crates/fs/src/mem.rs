@@ -13,6 +13,7 @@ pub struct MemFs {
     files: BTreeMap<PathBuf, FileStat>,
     dirs: BTreeSet<PathBuf>,
     trash: BTreeMap<PathBuf, FileStat>,
+    trashed_dirs: BTreeSet<PathBuf>,
     volumes: Vec<PathBuf>,
     ops: usize,
     fail_at: Option<usize>,
@@ -171,6 +172,9 @@ impl Fs for MemFs {
 
     fn rename(&mut self, from: &Path, to: &Path) -> io::Result<()> {
         self.tick()?;
+        if self.dirs.contains(from) {
+            return self.rename_dir(from, to);
+        }
         let st = *self.files.get(from).ok_or_else(not_found)?;
         if self.volume_of(from) != self.volume_of(to) {
             return Err(io::Error::from(io::ErrorKind::CrossesDevices));
@@ -211,6 +215,17 @@ impl Fs for MemFs {
 
     fn trash(&mut self, p: &Path) -> io::Result<()> {
         self.tick()?;
+        if self.dirs.contains(p) {
+            // A folder goes to the bin with everything in it.
+            let inside: Vec<PathBuf> = self.files.keys().filter(|f| f.starts_with(p)).cloned().collect();
+            for f in inside {
+                let st = self.files.remove(&f).expect("listed");
+                self.trash.insert(f, st);
+            }
+            self.dirs.retain(|d| !d.starts_with(p));
+            self.trashed_dirs.insert(p.to_path_buf());
+            return Ok(());
+        }
         let st = self.files.remove(p).ok_or_else(not_found)?;
         self.trash.insert(p.to_path_buf(), st);
         Ok(())
@@ -218,6 +233,16 @@ impl Fs for MemFs {
 
     fn restore_from_trash(&mut self, original: &Path) -> io::Result<()> {
         self.tick()?;
+        if self.trashed_dirs.remove(original) {
+            let inside: Vec<PathBuf> = self.trash.keys().filter(|f| f.starts_with(original)).cloned().collect();
+            self.add_dir(original);
+            for f in inside {
+                let st = self.trash.remove(&f).expect("listed");
+                self.add_ancestors(&f);
+                self.files.insert(f, st);
+            }
+            return Ok(());
+        }
         let st = self.trash.remove(original).ok_or_else(not_found)?;
         self.add_ancestors(original);
         self.files.insert(original.to_path_buf(), st);
@@ -247,5 +272,63 @@ impl Fs for MemFs {
         self.tick()?;
         self.ran.push(("<shell>".to_string(), vec![line.to_string()]));
         Ok(self.run_exit)
+    }
+
+    /// Test archives are text: one entry per line, `path=content`, or `path/` for a folder.
+    /// An archive whose text is `BROKEN` cannot be read; an entry with `..` is refused.
+    fn unpack(&mut self, archive: &Path, into: &Path) -> io::Result<()> {
+        self.tick()?;
+        if !self.dirs.contains(into) {
+            return Err(not_found());
+        }
+        let text = String::from_utf8_lossy(&self.read_prefix(archive, u64::MAX)?).into_owned();
+        if text.trim() == "BROKEN" {
+            return Err(io::Error::other("Unrecognized archive format"));
+        }
+        let modified = self.metadata(archive)?.modified;
+        for line in text.lines().filter(|l| !l.is_empty()) {
+            let (name, content) = line.split_once('=').unwrap_or((line, ""));
+            if name.split('/').any(|c| c == "..") || name.starts_with('/') {
+                return Err(io::Error::other(format!("Path contains '..': {name}")));
+            }
+            let p = into.join(name.trim_end_matches('/'));
+            if name.ends_with('/') {
+                self.add_dir(&p);
+            } else {
+                self.add_file_with(&p, content.as_bytes(), modified);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl MemFs {
+    fn rename_dir(&mut self, from: &Path, to: &Path) -> io::Result<()> {
+        if self.exists(to) {
+            return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+        }
+        if !self.parent_exists(to) {
+            return Err(not_found());
+        }
+        let moved = |p: &Path| to.join(p.strip_prefix(from).expect("inside"));
+        let files: Vec<PathBuf> = self.files.keys().filter(|f| f.starts_with(from)).cloned().collect();
+        for f in files {
+            let st = self.files.remove(&f).expect("listed");
+            if let Some(c) = self.contents.remove(&f) {
+                self.contents.insert(moved(&f), c);
+            }
+            self.files.insert(moved(&f), st);
+        }
+        let dirs: Vec<PathBuf> = self.dirs.iter().filter(|d| d.starts_with(from)).cloned().collect();
+        for d in dirs {
+            self.dirs.remove(&d);
+            self.dirs.insert(moved(&d));
+        }
+        Ok(())
+    }
+
+    /// Folders sent to the bin as a whole.
+    pub fn trashed_dirs(&self) -> Vec<PathBuf> {
+        self.trashed_dirs.iter().cloned().collect()
     }
 }

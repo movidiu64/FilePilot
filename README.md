@@ -22,7 +22,7 @@ Pick the folders to watch, say which files you mean (*if*) and what should happe
 ## Features
 
 - 📂 **Rules**: watch any folders (subfolders, network and removable drives included); nested *all of / any of* conditions on name, extension, path, size, dates and **file content** (text, DOCX, XLSX, ODT, PDF).
-- ⚙️ **Actions**: move, copy, rename, change extension, Recycle Bin, delete, run a program or a `cmd` command, **ask for confirmation**. Paths and names can use variables such as `{modified:AAAA}` or a dictionary (`{var:Supplier}`).
+- ⚙️ **Actions**: move, copy, rename, change extension, **extract archives** (ZIP, RAR, 7z…), Recycle Bin, delete, run a program or a `cmd` command, **ask for confirmation**. Paths and names can use variables such as `{modified:AAAA}` or a dictionary (`{var:Supplier}`).
 - 🧪 **Simulation**: a new rule can run "on paper" first; the journal shows what it would have done and nothing is touched.
 - ↩️ **Undo**: every operation goes through a write-ahead journal and can be restored, even after a crash or from the Recycle Bin.
 - 🧬 **Duplicates**: finds identical files (same folder or across folders), keeps the oldest copy, compares byte by byte before anything is removed. A fingerprint catalog keeps rescans of large folders fast.
