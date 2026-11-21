@@ -1849,6 +1849,42 @@ async function reveal(p) {
   try { await invoke('reveal', { path: p }); } catch (e) { toast(String(e), true); }
 }
 
+/// Where a click on a journal entry takes you: where the file went (a move, rename, copy or
+/// extraction that worked), or where it still is. Nothing for a file sent to the Recycle Bin
+/// or deleted.
+function placeOf(e) {
+  if (e.status === 'done' && e.dst) return e.dst;
+  if (e.status === 'done' && (e.kind === 'trash' || e.kind === 'delete')) return null;
+  return e.src;
+}
+
+/// A file name that shows the file in Explorer, selected (its folder if it is gone).
+let lastReveal = { path: null, at: 0 };
+function placeLink(path, text, cls = '', title = null) {
+  if (!path) return h('span', { class: cls, title: title || '' }, text);
+  return h('button', { type: 'button', class: ('linkbtn ' + cls).trim(), title: title || t('openPlace', { p: path }),
+    onclick: (ev) => {
+      ev.stopPropagation();
+      // A double click is one request, not two Explorer windows.
+      const now = Date.now();
+      if (lastReveal.path === path && now - lastReveal.at < 800) return;
+      lastReveal = { path, at: now };
+      reveal(path);
+    },
+    ondblclick: (ev) => ev.stopPropagation() }, text);
+}
+
+/// "source → destination": a click anywhere shows where the file is now (long paths are cut
+/// short, so the whole cell is the link); that part is underlined.
+function journalFileCell(e) {
+  const at = placeOf(e);
+  const tip = e.src + (e.dst ? ' → ' + e.dst : '') + (e.message ? '\n' + e.message : '');
+  const parts = !at ? [e.src, e.dst ? ' → ' + e.dst : '']
+    : e.dst && at === e.dst ? [e.src, ' → ', h('span', { class: 'place' }, e.dst)]
+      : [h('span', { class: 'place' }, e.src), e.dst ? ' → ' + e.dst : ''];
+  return placeLink(at, parts, 'ell mono jfile', at ? tip + '\n\n' + t('openPlace', { p: at }) : tip);
+}
+
 function journalMenu(ev, e, runCount) {
   const undoable = e.status === 'done' && UNDOABLE.has(e.kind);
   const here = entryPath(e);
@@ -1885,7 +1921,7 @@ function renderJournalBody() {
       h('span', { class: 'muted', title: fmtTime(e.ts) }, cont ? '' : fmtTime(e.ts)),
       h('span', { class: 'ell', title: e.rule ?? '' }, cont ? '' : e.rule ?? t('unknownRule')),
       h('span', {}, t(OP_LABEL[e.kind] || e.kind)),
-      h('span', { class: 'ell mono', title: e.src + (e.dst ? ' → ' + e.dst : '') + (e.message ? '\n' + e.message : '') }, e.src, e.dst ? ' → ' + e.dst : ''),
+      journalFileCell(e),
       h('span', { class: 'chip st-' + e.status, title: e.message }, t(ST_LABEL[e.status] || e.status)),
       h('span', { class: 'row' },
         e.status === 'done' && UNDOABLE.has(e.kind)
@@ -2203,7 +2239,7 @@ function fillHomeRecent() {
     return h('div', { class: 'hrow', oncontextmenu: (ev) => journalMenu(ev, e, 1) },
       h('span', { class: 'muted small', title: fmtTime(e.ts) }, relTime(e.ts)),
       h('div', { class: 'pmain' },
-        h('span', { class: 'ell', title: e.src }, fname(e.src)),
+        placeLink(placeOf(e), fname(placeOf(e) || e.src), 'ell'),
         h('span', { class: 'muted small ell', title: (e.dst || '') + (e.message ? '\n' + e.message : '') },
           t(OP_LABEL[e.kind] || e.kind), where, ' · ', e.rule ?? t('unknownRule'))),
       h('span', { class: 'chip st-' + e.status, title: e.message || '' }, t(ST_LABEL[e.status] || e.status)),
@@ -2785,11 +2821,10 @@ function fillSearchResults() {
   }
   if (!data) { fill(box, h('p', { id: 'search-progress', class: 'muted pad' }, t('searchStarting'))); return; }
   const rows = data.items.map((f) => h('div', { class: 'frow srow', title: t('searchRowHint'), oncontextmenu: (ev) => searchMenu(ev, f), ondblclick: () => openFile(f.path) },
-    h('span', { class: 'ell', title: f.name }, f.name),
+    h('span', { class: 'ell' }, placeLink(f.path, f.name)),
     h('span', { class: 'ell muted mono small', title: f.folder }, f.folder),
     h('span', { class: 'muted' }, fmtBytes(f.size)),
-    h('span', { class: 'muted' }, fmtTime(f.modified)),
-    h('span', {}, iconBtn('folder', t('ctxReveal'), () => reveal(f.path)))));
+    h('span', { class: 'muted' }, fmtTime(f.modified))));
   fill(box,
     h('div', { class: 'row between pad-h search-meta' },
       h('span', { id: 'search-progress', class: 'muted small' },
@@ -2800,7 +2835,7 @@ function fillSearchResults() {
     data.capped ? h('p', { class: 'warn pad' }, t('searchCapped', { n: fmtN(data.indexed) })) : null,
     h('div', { class: 'frow fhead muted srow' },
       [['name', 'colName'], ['folder', 'colFolder'], ['size', 'colSize'], ['modified', 'colModified']]
-        .map(([k, label]) => sortHeader(label, k, q.sort, (v) => { q.sort = v; newQuery(); runSearch(); })), h('span')),
+        .map(([k, label]) => sortHeader(label, k, q.sort, (v) => { q.sort = v; newQuery(); runSearch(); }))),
     rows.length ? h('div', { class: 'flist search-list' }, rows,
       data.total > data.items.length ? h('div', { class: 'row pad search-more' },
         h('span', { class: 'muted small' }, t('searchTop', { n: fmtN(data.items.length), total: fmtN(data.total) })),

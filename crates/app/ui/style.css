@@ -547,7 +547,7 @@ details.var-json:not([open]) > summary { border-bottom: 0; }
 .search-filters { gap: 14px; margin-top: 10px; align-items: center; }
 .ext-inp { width: 130px; }
 .search-meta { padding-top: 10px; padding-bottom: 6px; }
-.srow { grid-template-columns: minmax(180px, 2fr) minmax(160px, 3fr) 90px 165px 36px; }
+.srow { grid-template-columns: minmax(180px, 2fr) minmax(160px, 3fr) 90px 165px; }
 #search-results.stale .flist { opacity: .6; }
 /* Search: the results fill the window and scroll inside, the search box stays in view. */
 .page.search-page { overflow: hidden; }
@@ -556,3 +556,14 @@ details.var-json:not([open]) > summary { border-bottom: 0; }
 .search-page > #search-results > .search-list { flex: 1 1 auto; max-height: none; min-height: 0; }
 .search-more { gap: 10px; justify-content: center; border-bottom: 0; }
 .srow { cursor: default; }
+
+/* A file name that opens its location in Explorer. */
+.linkbtn { all: unset; cursor: pointer; color: var(--accent); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.linkbtn:hover { text-decoration: underline; }
+.linkbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 2px; }
+.pmain .linkbtn { display: block; }
+.srow .linkbtn { display: inline-block; }
+.linkbtn.jfile { color: inherit; display: block; }
+.linkbtn.jfile .place { color: var(--accent); }
+.linkbtn.jfile:hover { text-decoration: none; }
+.linkbtn.jfile:hover .place { text-decoration: underline; }

@@ -13,7 +13,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -31,7 +31,7 @@ use org_paths::{
 use org_portable::json::Value;
 use org_portable::request::{parse_request, Request};
 use org_sysfs::SysFs;
-use org_journal::{recover, undo, undo_run, Journal, UndoOutcome};
+use org_journal::{recover, undo, undo_run, Entry, Journal, OpKind, Status, UndoOutcome};
 use org_store::Store;
 
 const DEBOUNCE: Duration = Duration::from_millis(500);
@@ -182,6 +182,39 @@ struct DaemonStatus {
     pending: usize,
     /// Scanarea completă în curs: (fișiere verificate, total, începută la).
     scan: Option<(usize, usize, i64)>,
+    /// Where the latest files went, newest first (for the tray menu; not in the JSON).
+    recent: Vec<PathBuf>,
+}
+
+/// How many files the tray menu lists, and how many journal entries are looked at for them.
+const RECENT_SHOWN: usize = 10;
+const RECENT_SCAN: u32 = 200;
+
+/// Where the files most recently moved, renamed, copied or extracted ended up, newest first,
+/// each place once. A place a later operation moved the file away from is left out (moved,
+/// then renamed: only the final name), and so are the files of hidden rules.
+fn recent_places(entries: &[Entry], hidden: &HashSet<u64>, n: usize) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut left: Vec<&Path> = Vec::new();
+    for e in entries {
+        if out.len() >= n {
+            break;
+        }
+        if e.status != Status::Done || hidden.contains(&e.rule_id) {
+            continue;
+        }
+        let moving = matches!(e.kind, OpKind::Move | OpKind::Rename | OpKind::ChangeExt | OpKind::Trash | OpKind::Delete);
+        let placed = matches!(e.kind, OpKind::Move | OpKind::Copy | OpKind::Rename | OpKind::ChangeExt | OpKind::Extract);
+        if let (true, Some(d)) = (placed, &e.dst) {
+            if !left.contains(&d.as_path()) && !out.contains(d) {
+                out.push(d.clone());
+            }
+        }
+        if moving {
+            left.push(&e.src);
+        }
+    }
+    out
 }
 
 impl DaemonStatus {
@@ -276,6 +309,9 @@ struct Inbox {
     dirs: Vec<PathBuf>,
     /// Watcher-ul a pierdut evenimente (buffer plin): trebuie o scanare completă.
     rescan: bool,
+    /// The journal changed (a restore from the window, say): the tray's recent files are
+    /// looked at again.
+    journal: bool,
 }
 
 struct State {
@@ -296,6 +332,8 @@ impl State {
     /// Scrie `daemon-status.json` doar dacă s-a schimbat ceva (atomic: temporar + redenumire).
     fn write_status(&mut self) {
         self.status.pending = self.journal.pending().len();
+        let hidden: HashSet<u64> = self.engine.rules().iter().filter(|r| r.hidden).map(|r| r.id).collect();
+        self.status.recent = recent_places(&self.journal.recent(RECENT_SCAN), &hidden, RECENT_SHOWN);
         if self.status_path.as_os_str().is_empty() || self.status_written.as_ref() == Some(&self.status) {
             return;
         }
@@ -545,6 +583,8 @@ fn note(m: notify::Result<Event>, inbox: &mut Inbox, pf: &ProgFiles) {
                         }
                     } else if !pf.is_own(&p) {
                         inbox.dirty.insert(p, Instant::now());
+                    } else if p.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase().starts_with("organizator.db")) {
+                        inbox.journal = true;
                     }
                 }
             }
@@ -647,10 +687,10 @@ mod console {
 mod tray {
     use super::{DaemonStatus, Lang};
     use std::error::Error;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{mpsc, Mutex, OnceLock};
-    use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+    use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
     use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
     use windows_sys::Win32::System::Threading::GetCurrentThreadId;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -664,6 +704,9 @@ mod tray {
     type Info = (Option<i64>, u64, u64, usize);
     static INFO: Mutex<Option<Info>> = Mutex::new(None);
     static PAUSE_PATH: OnceLock<PathBuf> = OnceLock::new();
+    /// Where the latest files went (from the daemon), and the menu items that open them.
+    static RECENT: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+    static RECENT_IDS: Mutex<Vec<(MenuId, PathBuf)>> = Mutex::new(Vec::new());
 
     pub fn set_pause_path(p: PathBuf) {
         let _ = PAUSE_PATH.set(p);
@@ -673,6 +716,9 @@ mod tray {
     pub fn update(st: &DaemonStatus) {
         if let Ok(mut g) = INFO.lock() {
             *g = Some((st.paused_until, st.done, st.failed, st.pending));
+        }
+        if let Ok(mut g) = RECENT.lock() {
+            g.clone_from(&st.recent);
         }
         let tid = TRAY_TID.load(Ordering::Acquire);
         if tid != 0 {
@@ -692,7 +738,82 @@ mod tray {
         };
     }
 
-    fn apply(tray: &TrayIcon, pause1: &MenuItem, pause_inf: &MenuItem, resume: &MenuItem, lang: Lang) {
+    /// The "Recent files" submenu: one item per place, rebuilt when the list changes.
+    struct Recent {
+        menu: Submenu,
+        empty: MenuItem,
+        items: Vec<MenuItem>,
+        shown: Option<Vec<PathBuf>>,
+    }
+
+    impl Recent {
+        fn refresh(&mut self) {
+            let now = RECENT.lock().map(|g| g.clone()).unwrap_or_default();
+            if self.shown.as_ref() == Some(&now) {
+                return;
+            }
+            for it in self.items.drain(..) {
+                let _ = self.menu.remove(&it);
+            }
+            let _ = self.menu.remove(&self.empty);
+            let mut ids = Vec::with_capacity(now.len());
+            if now.is_empty() {
+                let _ = self.menu.append(&self.empty);
+            }
+            for p in &now {
+                let it = MenuItem::new(label(p), true, None);
+                let _ = self.menu.append(&it);
+                ids.push((it.id().clone(), p.clone()));
+                self.items.push(it);
+            }
+            if let Ok(mut g) = RECENT_IDS.lock() {
+                *g = ids;
+            }
+            self.shown = Some(now);
+        }
+    }
+
+    /// "invoice.pdf<tab>…\Invoices\2026-11": the name, and the folder in the right column.
+    fn label(p: &Path) -> String {
+        let name = p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
+        let dir = p.parent().map(|d| d.display().to_string()).unwrap_or_default();
+        // A single & would underline the next letter in a Windows menu.
+        format!("{}\t{}", shorten(&name, 48, false), shorten(&dir, 42, true)).replace('&', "&&")
+    }
+
+    fn shorten(s: &str, max: usize, keep_end: bool) -> String {
+        let n = s.chars().count();
+        if n <= max {
+            s.to_string()
+        } else if keep_end {
+            format!("…{}", s.chars().skip(n + 1 - max).collect::<String>())
+        } else {
+            format!("{}…", s.chars().take(max - 1).collect::<String>())
+        }
+    }
+
+    /// Shows a file in Explorer, selected; a folder opens; a file that is no longer there
+    /// opens the nearest folder that still is.
+    fn reveal(p: PathBuf) {
+        std::thread::spawn(move || {
+            use std::os::windows::process::CommandExt;
+            let mut cmd = std::process::Command::new("explorer.exe");
+            if p.is_dir() {
+                cmd.arg(&p);
+            } else if p.exists() {
+                // Explorer wants `/select,"path"` as one argument, with its own quotes.
+                cmd.raw_arg(format!("/select,\"{}\"", p.display()));
+            } else if let Some(d) = p.ancestors().skip(1).find(|d| d.is_dir()) {
+                cmd.arg(d);
+            } else {
+                return;
+            }
+            let _ = cmd.spawn();
+        });
+    }
+
+    fn apply(tray: &TrayIcon, pause1: &MenuItem, pause_inf: &MenuItem, resume: &MenuItem, recent: &mut Recent, lang: Lang) {
+        recent.refresh();
         let (paused, done, failed, pending) = INFO.lock().ok().and_then(|g| *g).unwrap_or((None, 0, 0, 0));
         let now = super::now_ts();
         let is_paused = paused.is_some_and(|u| u > now);
@@ -767,6 +888,11 @@ mod tray {
             Lang::En => ("Open FilePilot", "Quit", "FilePilot is running in the background", "Pause for 1 hour", "Pause until resumed", "Resume"),
             _ => ("Deschide FilePilot", "Ieșire", "FilePilot rulează în fundal", "Pauză o oră", "Pauză până reiau", "Reia"),
         };
+        let (recent_t, none_t) = match lang {
+            Lang::En => ("Recent files", "No files yet"),
+            _ => ("Fișiere recente", "Niciun fișier încă"),
+        };
+        let mut recent = Recent { menu: Submenu::new(recent_t, true), empty: MenuItem::new(none_t, false, None), items: Vec::new(), shown: None };
         let menu = Menu::new();
         let open = MenuItem::new(open_t, true, None);
         let pause1 = MenuItem::new(p1_t, true, None);
@@ -774,6 +900,7 @@ mod tray {
         let resume = MenuItem::new(res_t, false, None);
         let quit = MenuItem::new(quit_t, true, None);
         let _ = menu.append(&open);
+        let _ = menu.append(&recent.menu);
         let _ = menu.append(&PredefinedMenuItem::separator());
         let _ = menu.append(&pause1);
         let _ = menu.append(&pause_inf);
@@ -814,6 +941,11 @@ mod tray {
                 // Jurnalul e write-ahead și SQLite e sincron: oprirea promptă e sigură,
                 // iar la pornirea următoare `recover()` reconciliază ce a rămas neterminat.
                 std::process::exit(0);
+            } else {
+                let place = RECENT_IDS.lock().ok().and_then(|g| g.iter().find(|(id, _)| *id == e.id).map(|(_, p)| p.clone()));
+                if let Some(p) = place {
+                    reveal(p);
+                }
             }
         }));
         TrayIconEvent::set_event_handler(Some(|e: TrayIconEvent| {
@@ -826,11 +958,11 @@ mod tray {
         // fereastră e mesajul de actualizare trimis de `update`.
         unsafe {
             TRAY_TID.store(GetCurrentThreadId(), Ordering::Release);
-            apply(&tray, &pause1, &pause_inf, &resume, lang);
+            apply(&tray, &pause1, &pause_inf, &resume, &mut recent, lang);
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
                 if msg.hwnd.is_null() && msg.message == WM_APP {
-                    apply(&tray, &pause1, &pause_inf, &resume, lang);
+                    apply(&tray, &pause1, &pause_inf, &resume, &mut recent, lang);
                     continue;
                 }
                 TranslateMessage(&msg);
@@ -1101,6 +1233,11 @@ fn run(ready: impl FnOnce()) -> Result<(), Box<dyn Error>> {
             was_paused = paused;
         }
 
+        // The journal changed outside the daemon (a restore): the tray menu follows.
+        if std::mem::take(&mut inbox.journal) {
+            st.write_status();
+        }
+
         // Cererile ferestrei („Marchează în așteptare”) se aplică și în pauză.
         if !inbox.requests.is_empty() {
             let reqs = std::mem::take(&mut inbox.requests);
@@ -1278,4 +1415,45 @@ fn run(ready: impl FnOnce()) -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn e(id: u64, rule: u64, kind: OpKind, src: &str, dst: Option<&str>, status: Status) -> Entry {
+        Entry {
+            id,
+            run_id: id,
+            rule_id: rule,
+            ts: 0,
+            kind,
+            src: PathBuf::from(src),
+            dst: dst.map(PathBuf::from),
+            size: 0,
+            mtime: 0,
+            status,
+        }
+    }
+
+    #[test]
+    fn the_tray_lists_where_files_ended_up() {
+        // Newest first, as the journal gives them.
+        let entries = vec![
+            e(9, 1, OpKind::Rename, "/inv/2026/a.pdf", Some("/inv/2026/Enel a.pdf"), Status::Done),
+            e(8, 1, OpKind::Move, "/dl/a.pdf", Some("/inv/2026/a.pdf"), Status::Done),
+            e(7, 2, OpKind::Move, "/dl/secret.pdf", Some("/vault/secret.pdf"), Status::Done),
+            e(6, 1, OpKind::Move, "/dl/b.pdf", Some("/inv/b.pdf"), Status::Failed("busy".into())),
+            e(5, 1, OpKind::Copy, "/dl/c.pdf", Some("/backup/c.pdf"), Status::Done),
+            e(4, 1, OpKind::Trash, "/dl/d.tmp", None, Status::Done),
+            e(3, 1, OpKind::Extract, "/dl/e.zip", Some("/dl/e"), Status::Done),
+            e(2, 1, OpKind::Move, "/dl/f.pdf", Some("/inv/f.pdf"), Status::Undone),
+            e(1, 1, OpKind::Move, "/old/c.pdf", Some("/backup/c.pdf"), Status::Done),
+        ];
+        let hidden: HashSet<u64> = [2].into_iter().collect();
+        let got = recent_places(&entries, &hidden, 10);
+        let want: Vec<PathBuf> = ["/inv/2026/Enel a.pdf", "/backup/c.pdf", "/dl/e"].iter().map(PathBuf::from).collect();
+        assert_eq!(got, want);
+        assert_eq!(recent_places(&entries, &hidden, 2).len(), 2);
+    }
 }
