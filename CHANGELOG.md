@@ -3,7 +3,7 @@
 All notable changes to FilePilot are listed here. Versions follow [Semantic Versioning](https://semver.org/):
 a new major version may need you to review your rules, minor versions add features, patches fix bugs.
 
-## [Unreleased]
+## [1.3.0] - 2026-11-22
 
 ### Added
 - **Recent files** in the tray icon's menu: the last 10 files the rules moved, renamed, copied or extracted; a click shows the file in Explorer.

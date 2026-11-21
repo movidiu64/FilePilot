@@ -5,7 +5,7 @@ labels: bug
 ---
 
 **FilePilot version and Windows version**
-<!-- Settings, at the bottom; e.g. FilePilot 1.2.0, Windows 11 24H2 -->
+<!-- Settings, at the bottom; e.g. FilePilot 1.3.0, Windows 11 24H2 -->
 
 **The rule**
 <!-- Rule menu → Edit as JSON. Replace personal paths and names. -->
