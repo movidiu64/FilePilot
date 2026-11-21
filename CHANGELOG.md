@@ -7,10 +7,10 @@ a new major version may need you to review your rules, minor versions add featur
 
 ### Added
 - **Recent files** in the tray icon's menu: the last 10 files the rules moved, renamed, copied or extracted; a click shows the file in Explorer.
-- File names under **Recent actions** on the Home page and in the **Journal** are links: a click shows the file in Explorer where it went (or where it stayed).
+- On the Home page (**Recent actions**) and in the **Journal**, the file's path is a link, as on the Duplicates page: a click shows the file in Explorer where it went (or where it stayed).
 
 ### Changed
-- Search: the file name is the link that shows it in Explorer; the folder button is gone. Double-click elsewhere on the row still opens the file.
+- Search: the folder column is the link that shows the file in Explorer; the folder button is gone. Double-click on the row still opens the file.
 
 ## [1.2.0] - 2026-11-15
 

@@ -1858,11 +1858,13 @@ function placeOf(e) {
   return e.src;
 }
 
-/// A file name that shows the file in Explorer, selected (its folder if it is gone).
+/// A path with a folder icon, like on the Duplicates page, that shows the file in Explorer,
+/// selected (its folder if it is gone).
 let lastReveal = { path: null, at: 0 };
+const dirOf = (p) => String(p || '').replace(/[\\/][^\\/]*$/, '');
 function placeLink(path, text, cls = '', title = null) {
-  if (!path) return h('span', { class: cls, title: title || '' }, text);
-  return h('button', { type: 'button', class: ('linkbtn ' + cls).trim(), title: title || t('openPlace', { p: path }),
+  if (!path) return h('span', { class: ('ell ' + cls).trim(), title: title || '' }, text);
+  return h('button', { type: 'button', class: ('path-link ' + cls).trim(), title: title || t('revealHere', { path }),
     onclick: (ev) => {
       ev.stopPropagation();
       // A double click is one request, not two Explorer windows.
@@ -1871,18 +1873,16 @@ function placeLink(path, text, cls = '', title = null) {
       lastReveal = { path, at: now };
       reveal(path);
     },
-    ondblclick: (ev) => ev.stopPropagation() }, text);
+    ondblclick: (ev) => ev.stopPropagation() }, icon('folder'), h('span', { class: 'ell' }, text));
 }
 
 /// "source → destination": a click anywhere shows where the file is now (long paths are cut
-/// short, so the whole cell is the link); that part is underlined.
+/// short, so the whole cell is the link).
 function journalFileCell(e) {
   const at = placeOf(e);
   const tip = e.src + (e.dst ? ' → ' + e.dst : '') + (e.message ? '\n' + e.message : '');
-  const parts = !at ? [e.src, e.dst ? ' → ' + e.dst : '']
-    : e.dst && at === e.dst ? [e.src, ' → ', h('span', { class: 'place' }, e.dst)]
-      : [h('span', { class: 'place' }, e.src), e.dst ? ' → ' + e.dst : ''];
-  return placeLink(at, parts, 'ell mono jfile', at ? tip + '\n\n' + t('openPlace', { p: at }) : tip);
+  const parts = [e.src, e.dst ? ' → ' + e.dst : ''];
+  return placeLink(at, parts, 'mono jfile', at ? tip + '\n\n' + t('revealHere', { path: at }) : tip);
 }
 
 function journalMenu(ev, e, runCount) {
@@ -2235,13 +2235,14 @@ function fillHomeRecent() {
   if (!r.entries.length) { fill(box, h('p', { class: 'muted pad' }, t('recentEmpty'))); return; }
   fill(box, r.entries.map((e) => {
     const undoable = e.status === 'done' && UNDOABLE.has(e.kind);
-    const where = e.dst ? ' → ' + tailPath(e.dst, 48) : '';
     return h('div', { class: 'hrow', oncontextmenu: (ev) => journalMenu(ev, e, 1) },
       h('span', { class: 'muted small', title: fmtTime(e.ts) }, relTime(e.ts)),
       h('div', { class: 'pmain' },
-        placeLink(placeOf(e), fname(placeOf(e) || e.src), 'ell'),
-        h('span', { class: 'muted small ell', title: (e.dst || '') + (e.message ? '\n' + e.message : '') },
-          t(OP_LABEL[e.kind] || e.kind), where, ' · ', e.rule ?? t('unknownRule'))),
+        h('span', { class: 'ell', title: placeOf(e) || e.src }, fname(placeOf(e) || e.src)),
+        h('span', { class: 'row hplace' },
+          placeOf(e) ? placeLink(placeOf(e), dirOf(placeOf(e)), 'small mono') : null,
+          h('span', { class: 'muted small nowrap', title: (e.dst || '') + (e.message ? '\n' + e.message : '') },
+            (placeOf(e) ? '· ' : '') + t(OP_LABEL[e.kind] || e.kind) + ' · ' + (e.rule ?? t('unknownRule'))))),
       h('span', { class: 'chip st-' + e.status, title: e.message || '' }, t(ST_LABEL[e.status] || e.status)),
       undoable ? h('button', { type: 'button', class: 'btn small', title: t('restore'), onclick: () => undoFromHome(e) }, icon('undo'), t('restore'))
         : h('span'));
@@ -2821,8 +2822,8 @@ function fillSearchResults() {
   }
   if (!data) { fill(box, h('p', { id: 'search-progress', class: 'muted pad' }, t('searchStarting'))); return; }
   const rows = data.items.map((f) => h('div', { class: 'frow srow', title: t('searchRowHint'), oncontextmenu: (ev) => searchMenu(ev, f), ondblclick: () => openFile(f.path) },
-    h('span', { class: 'ell' }, placeLink(f.path, f.name)),
-    h('span', { class: 'ell muted mono small', title: f.folder }, f.folder),
+    h('span', { class: 'ell', title: f.name }, f.name),
+    h('span', { class: 'ell' }, placeLink(f.path, f.folder, 'small mono')),
     h('span', { class: 'muted' }, fmtBytes(f.size)),
     h('span', { class: 'muted' }, fmtTime(f.modified))));
   fill(box,

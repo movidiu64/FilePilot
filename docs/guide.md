@@ -174,7 +174,7 @@ The **Search** page finds files in the folders your rules watch, like a small Ev
 
 - **Name**: words in any order (`final report` finds `Report FINAL v2.docx`); a word with `*` or `?` is a pattern for the whole name (`*.pdf`, `invoice-??.docx`). Letter case does not matter.
 - **Extensions** (`pdf, docx`), **size** (under 1 MB … over 1 GB) and **modified** (today, last 7 or 30 days, last year, older than a year).
-- Sort by name, folder, size or date. Click a file's name to show it in Explorer, double-click elsewhere on its row to open it, right-click for both and to copy its path.
+- Sort by name, folder, size or date. Click a file's folder to show it in Explorer, selected; double-click its row to open it; right-click for both and to copy its path.
 - The first 500 results are shown; **Show more** brings the next ones. **Ctrl+F** brings you to this page from anywhere in the window.
 
 The first search lists the folders, using only what the folder listing gives (name, size, date), without opening any file; every later search filters that list in memory, in milliseconds even with hundreds of thousands of files. What your rules move, rename, copy or delete (and what you restore from the journal) shows up at its new place right away, without listing the folders again. Changes made outside FilePilot show up when the list is redone: automatically after 5 minutes, when the rules' folders change, or with **Refresh**. The list is freed from memory 10 minutes after you leave the page. Folders of hidden rules are searched only while hidden rules are unlocked.
@@ -208,7 +208,7 @@ A rule with **Simulation only** does not touch any file. It writes in the journa
 
 Every operation is written to a write-ahead journal before it happens and marked as done after. If the PC stops in the middle of an operation (including a copy between drives), the operation is completed or rolled back at the next start: a file is never lost or duplicated.
 
-The **Journal** tab lists operations with search, filters by rule, status and period, and pages. Clicking a file shows it in Explorer where it is now: where it was moved, renamed, copied or extracted to, or where it stayed if the operation failed or was restored (the underlined part). The same goes for the file names under **Recent actions** on the Home page. **Restore** puts a file back where it was, including from the Recycle Bin with its original extension; **Whole run** restores every operation of one pass. A restored file is not processed again by the rule unless it changes or you mark it as pending. If a file changed after the operation, FilePilot asks before restoring it.
+The **Journal** tab lists operations with search, filters by rule, status and period, and pages. Clicking a file shows it in Explorer where it is now: where it was moved, renamed, copied or extracted to, or where it stayed if the operation failed or was restored. Under **Recent actions** on the Home page, the folder under each file does the same. **Restore** puts a file back where it was, including from the Recycle Bin with its original extension; **Whole run** restores every operation of one pass. A restored file is not processed again by the rule unless it changes or you mark it as pending. If a file changed after the operation, FilePilot asks before restoring it.
 
 The journal keeps 30, 90 (default) or 365 days, or everything (Settings). Old entries are removed at startup and daily; restores that remember where a file came from are kept.
 

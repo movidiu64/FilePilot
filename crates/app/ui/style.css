@@ -557,13 +557,8 @@ details.var-json:not([open]) > summary { border-bottom: 0; }
 .search-more { gap: 10px; justify-content: center; border-bottom: 0; }
 .srow { cursor: default; }
 
-/* A file name that opens its location in Explorer. */
-.linkbtn { all: unset; cursor: pointer; color: var(--accent); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
-.linkbtn:hover { text-decoration: underline; }
-.linkbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 2px; }
-.pmain .linkbtn { display: block; }
-.srow .linkbtn { display: inline-block; }
-.linkbtn.jfile { color: inherit; display: block; }
-.linkbtn.jfile .place { color: var(--accent); }
-.linkbtn.jfile:hover { text-decoration: none; }
-.linkbtn.jfile:hover .place { text-decoration: underline; }
+/* Where a file went: the Duplicates page's path link, used on Home, Journal and Search. */
+.hplace { gap: 6px; min-width: 0; flex-wrap: nowrap; }
+.hplace .path-link { flex: 0 1 auto; }
+.path-link.jfile { display: flex; font-size: inherit; }
+.srow .path-link { display: flex; }
