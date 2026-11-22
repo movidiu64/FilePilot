@@ -230,7 +230,9 @@ pub fn verify_installer(data: &[u8], signature: &str, r: &Release) -> Result<(),
 /// whose signed comment names `name` and `version`.
 pub fn verify_signature(data: &[u8], signature: &str, name: &str, version: Version, public_key: &str) -> Result<(), Error> {
     let pk = minisign_verify::PublicKey::from_base64(public_key).map_err(|e| Error::Signature(format!("public key: {e}")))?;
-    let sig = minisign_verify::Signature::decode(signature).map_err(|e| Error::Signature(e.to_string()))?;
+    // A signature file saved with Windows line ends (or stray CRs) reads the same.
+    let signature = signature.replace('\r', "");
+    let sig = minisign_verify::Signature::decode(&signature).map_err(|e| Error::Signature(e.to_string()))?;
     // Only prehashed signatures (allow_legacy = false), as minisign makes by default.
     pk.verify(data, &sig, false).map_err(|e| Error::Signature(e.to_string()))?;
     let comment = sig.trusted_comment();

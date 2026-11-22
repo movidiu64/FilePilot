@@ -107,7 +107,10 @@ fn the_signature_is_checked_with_the_key_file_and_version() {
     let edited = SIG.replace("version:9.0.0", "version:9.0.1");
     assert!(err(verify_signature(DATA, &edited, NAME, v("9.0.1"), TEST_KEY)));
     // Windows line ends (a checkout with autocrlf) still read.
-    assert_eq!(verify_signature(DATA, &SIG.replace('\n', "\r\n"), NAME, v("9.0.0"), TEST_KEY), Ok(()));
+    let lf = SIG.replace('\r', "");
+    assert_eq!(verify_signature(DATA, &lf, NAME, v("9.0.0"), TEST_KEY), Ok(()));
+    assert_eq!(verify_signature(DATA, &lf.replace('\n', "\r\n"), NAME, v("9.0.0"), TEST_KEY), Ok(()));
+    assert_eq!(verify_signature(DATA, &lf.replace('\n', "\r\r\n"), NAME, v("9.0.0"), TEST_KEY), Ok(()));
     assert!(err(verify_signature(DATA, "garbage", NAME, v("9.0.0"), TEST_KEY)));
     assert!(err(verify_signature(DATA, "", NAME, v("9.0.0"), TEST_KEY)));
 }
