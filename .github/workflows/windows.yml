@@ -140,7 +140,15 @@ jobs:
           if ($after) { Write-Host "update: daemon restarted (pid $($after.Id))" }
           else { Write-Warning 'update: the daemon was not restarted (no tray on the runner?)' }
 
-          # 4. Uninstall: files, Installed apps entry and autostart go; the data stays.
+          # 4. Update the way the app starts it (crates/update): progress only, no questions, the
+          #    window opened again at the end.
+          Get-Process filepilot-ui -ErrorAction SilentlyContinue | Stop-Process -Force
+          RunWait $setup '/P /R /UPDATE'
+          WaitFor 'the window opened again after the update' { Proc filepilot-ui } 60
+          Get-Process filepilot-ui -ErrorAction SilentlyContinue | Stop-Process -Force
+          Write-Host 'update as from the app (/P /R /UPDATE): ok'
+
+          # 5. Uninstall: files, Installed apps entry and autostart go; the data stays.
           RunWait (Join-Path $dir 'uninstall.exe') '/S'
           # uninstall.exe copies itself to %TEMP% and returns at once: wait for the result.
           WaitFor 'uninstall' { -not (Test-Path "$uninst\FilePilot") -and -not (Test-Path "$dir\filepilot.exe") -and -not (RunValue 'FilePilot') } 60
@@ -150,13 +158,32 @@ jobs:
           Write-Host 'install, upgrade, update and uninstall: ok'
           exit 0
 
+      # The app's updater runs only installers signed with FilePilot's key (crates/update):
+      # minisign format, with the file name and version in the signed comment. Without the
+      # secret (a fork, say) the build goes on unsigned; a release then refuses to publish.
+      - name: Sign the installer
+        env:
+          FILEPILOT_SIGNING_KEY: ${{ secrets.FILEPILOT_SIGNING_KEY }}
+        run: |
+          if (-not $env:FILEPILOT_SIGNING_KEY) { Write-Warning 'FILEPILOT_SIGNING_KEY is not set: the installer is not signed'; exit 0 }
+          python -m pip install --quiet --disable-pip-version-check cryptography
+          $want = (Select-String -Path crates/update/src/lib.rs -Pattern 'pub const PUBLIC_KEY: &str = "(.+)";').Matches[0].Groups[1].Value
+          $have = (python tools/sign-release.py public).Trim()
+          if ($have -ne $want) { Write-Host "::error::FILEPILOT_SIGNING_KEY does not belong to PUBLIC_KEY in crates/update/src/lib.rs"; exit 1 }
+          $setup = (Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1).FullName
+          python tools/sign-release.py sign $setup "${{ steps.ver.outputs.version }}"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # The check the app makes, on the real file.
+          cargo run --release -p org-update --example verify -- $setup "${{ steps.ver.outputs.version }}"
+
       - name: Package
         run: |
           $v = "${{ steps.ver.outputs.version }}"
           New-Item -ItemType Directory -Force out, portable | Out-Null
           Copy-Item target/release/filepilot.exe, target/release/filepilot-ui.exe, README.md, CHANGELOG.md, LICENSE portable/
           Compress-Archive -Path portable/* -DestinationPath "out/FilePilot-$v-portable.zip"
-          Copy-Item target/release/bundle/nsis/*-setup.exe out/
+          Copy-Item target/release/bundle/nsis/*-setup.exe, target/release/bundle/nsis/*-setup.exe.minisig out/ -ErrorAction SilentlyContinue
+          if (-not (Get-ChildItem out/*-setup.exe)) { Write-Host '::error::no installer'; exit 1 }
           Get-ChildItem out | Format-Table Name, Length
 
       # Artifacts count against the account's shared storage: keep them briefly. Releases stay.
@@ -185,6 +212,10 @@ jobs:
           gh release view "v$v" *> $null
           if ($LASTEXITCODE -eq 0) { Write-Host "v$v is already released"; exit 0 }
           $global:LASTEXITCODE = 0
+          # Installed copies update themselves only from signed installers.
+          if (-not (Get-ChildItem out/*-setup.exe.minisig -ErrorAction SilentlyContinue)) {
+            Write-Host "::error::the installer is not signed (FILEPILOT_SIGNING_KEY); not publishing v$v"; exit 1
+          }
           # The changelog section of this version becomes the release notes.
           $text = Get-Content CHANGELOG.md -Raw
           $m = [regex]::Match($text, "(?ms)^## \[?$([regex]::Escape($v))\]?[^\n]*\n(.*?)(?=^## |\z)")

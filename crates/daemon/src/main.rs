@@ -184,6 +184,40 @@ struct DaemonStatus {
     scan: Option<(usize, usize, i64)>,
     /// Where the latest files went, newest first (for the tray menu; not in the JSON).
     recent: Vec<PathBuf>,
+    /// A newer FilePilot found on GitHub (for the tray menu; the window reads update.json).
+    update: Option<String>,
+}
+
+/// How often the daemon looks whether a check for updates is due (it is, once a day).
+const UPDATE_LOOK: Duration = Duration::from_secs(3600);
+/// The first look after starting: not while the initial scan is busy.
+const UPDATE_FIRST_LOOK: Duration = Duration::from_secs(120);
+static UPDATE_CHECKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The user agreed to updates being checked (Settings, or the question on first start).
+fn updates_on() -> bool {
+    matches!(saved_setting("updates"), Some(Value::Str(s)) if s == "on")
+}
+
+/// Asks GitHub for the latest release, in the background, if a check is due. The result goes
+/// to update.json, which the window reads; its change brings the tray menu up to date.
+fn check_updates_if_due(dir: &Path) {
+    let path = dir.join(org_update::STATE_FILE);
+    if !updates_on() || !org_update::read_state(&path).due(now_ts()) {
+        return;
+    }
+    if UPDATE_CHECKING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let st = org_update::check_and_record(&path, now_ts());
+        match (&st.error, st.available()) {
+            (Some(e), _) => println!("[actualizare] verificarea a eșuat: {e}"),
+            (None, Some(v)) => println!("[actualizare] versiune nouă: {v}"),
+            (None, None) => println!("[actualizare] FilePilot e la zi"),
+        }
+        UPDATE_CHECKING.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
 }
 
 /// How many files the tray menu lists, and how many journal entries are looked at for them.
@@ -309,8 +343,8 @@ struct Inbox {
     dirs: Vec<PathBuf>,
     /// Watcher-ul a pierdut evenimente (buffer plin): trebuie o scanare completă.
     rescan: bool,
-    /// The journal changed (a restore from the window, say): the tray's recent files are
-    /// looked at again.
+    /// The journal or update.json changed (a restore from the window, a check for updates):
+    /// what the tray shows is looked at again.
     journal: bool,
 }
 
@@ -326,6 +360,8 @@ struct State {
     status: DaemonStatus,
     status_written: Option<DaemonStatus>,
     status_path: PathBuf,
+    /// update.json (empty with `--once`).
+    update_path: PathBuf,
 }
 
 impl State {
@@ -334,6 +370,9 @@ impl State {
         self.status.pending = self.journal.pending().len();
         let hidden: HashSet<u64> = self.engine.rules().iter().filter(|r| r.hidden).map(|r| r.id).collect();
         self.status.recent = recent_places(&self.journal.recent(RECENT_SCAN), &hidden, RECENT_SHOWN);
+        if !self.update_path.as_os_str().is_empty() {
+            self.status.update = org_update::read_state(&self.update_path).available().map(|v| v.to_string());
+        }
         if self.status_path.as_os_str().is_empty() || self.status_written.as_ref() == Some(&self.status) {
             return;
         }
@@ -583,7 +622,10 @@ fn note(m: notify::Result<Event>, inbox: &mut Inbox, pf: &ProgFiles) {
                         }
                     } else if !pf.is_own(&p) {
                         inbox.dirty.insert(p, Instant::now());
-                    } else if p.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase().starts_with("organizator.db")) {
+                    } else if p.file_name().is_some_and(|n| {
+                        let n = n.to_string_lossy().to_lowercase();
+                        n.starts_with("organizator.db") || n.starts_with(org_update::STATE_FILE)
+                    }) {
                         inbox.journal = true;
                     }
                 }
@@ -706,6 +748,8 @@ mod tray {
     static PAUSE_PATH: OnceLock<PathBuf> = OnceLock::new();
     /// Where the latest files went (from the daemon), and the menu items that open them.
     static RECENT: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+    /// A newer version on GitHub, shown at the top of the menu.
+    static UPDATE: Mutex<Option<String>> = Mutex::new(None);
     static RECENT_IDS: Mutex<Vec<(MenuId, PathBuf)>> = Mutex::new(Vec::new());
 
     pub fn set_pause_path(p: PathBuf) {
@@ -719,6 +763,9 @@ mod tray {
         }
         if let Ok(mut g) = RECENT.lock() {
             g.clone_from(&st.recent);
+        }
+        if let Ok(mut g) = UPDATE.lock() {
+            g.clone_from(&st.update);
         }
         let tid = TRAY_TID.load(Ordering::Acquire);
         if tid != 0 {
@@ -812,8 +859,36 @@ mod tray {
         });
     }
 
-    fn apply(tray: &TrayIcon, pause1: &MenuItem, pause_inf: &MenuItem, resume: &MenuItem, recent: &mut Recent, lang: Lang) {
+    /// "FilePilot 1.4.0 is available" at the top of the menu, while there is one.
+    struct UpdateItem {
+        menu: Menu,
+        item: MenuItem,
+        shown: Option<String>,
+    }
+
+    impl UpdateItem {
+        fn refresh(&mut self, lang: Lang) {
+            let now = UPDATE.lock().ok().and_then(|g| g.clone());
+            if now == self.shown {
+                return;
+            }
+            if self.shown.is_some() {
+                let _ = self.menu.remove(&self.item);
+            }
+            if let Some(v) = &now {
+                self.item.set_text(match lang {
+                    Lang::En => format!("FilePilot {v} is available…"),
+                    _ => format!("FilePilot {v} e disponibil…"),
+                });
+                let _ = self.menu.insert(&self.item, 0);
+            }
+            self.shown = now;
+        }
+    }
+
+    fn apply(tray: &TrayIcon, pause1: &MenuItem, pause_inf: &MenuItem, resume: &MenuItem, recent: &mut Recent, upd: &mut UpdateItem, lang: Lang) {
         recent.refresh();
+        upd.refresh(lang);
         let (paused, done, failed, pending) = INFO.lock().ok().and_then(|g| *g).unwrap_or((None, 0, 0, 0));
         let now = super::now_ts();
         let is_paused = paused.is_some_and(|u| u > now);
@@ -907,6 +982,8 @@ mod tray {
         let _ = menu.append(&resume);
         let _ = menu.append(&PredefinedMenuItem::separator());
         let _ = menu.append(&quit);
+        // The menu is shared (Rc): the copy kept here adds and removes the update item.
+        let mut upd = UpdateItem { menu: menu.clone(), item: MenuItem::new("", true, None), shown: None };
         let icon = Icon::from_rgba(ICON_RGBA.to_vec(), 32, 32).expect("pictograma tray");
         let tray = match TrayIconBuilder::new()
             .with_menu(Box::new(menu))
@@ -924,12 +1001,12 @@ mod tray {
                 }
             }
         };
-        let (open_id, quit_id) = (open.id().clone(), quit.id().clone());
+        let (open_id, quit_id, upd_id) = (open.id().clone(), quit.id().clone(), upd.item.id().clone());
         let (p1_id, pinf_id, res_id) = (pause1.id().clone(), pause_inf.id().clone(), resume.id().clone());
         // Handlere apelate direct din procedura ferestrei pictogramei: reacție imediată, fără să
         // depindă de următorul mesaj Windows.
         MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
-            if e.id == open_id {
+            if e.id == open_id || e.id == upd_id {
                 open_ui();
             } else if e.id == p1_id {
                 write_pause(Some(super::now_ts() + 3600));
@@ -958,11 +1035,11 @@ mod tray {
         // fereastră e mesajul de actualizare trimis de `update`.
         unsafe {
             TRAY_TID.store(GetCurrentThreadId(), Ordering::Release);
-            apply(&tray, &pause1, &pause_inf, &resume, &mut recent, lang);
+            apply(&tray, &pause1, &pause_inf, &resume, &mut recent, &mut upd, lang);
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
                 if msg.hwnd.is_null() && msg.message == WM_APP {
-                    apply(&tray, &pause1, &pause_inf, &resume, &mut recent, lang);
+                    apply(&tray, &pause1, &pause_inf, &resume, &mut recent, &mut upd, lang);
                     continue;
                 }
                 TranslateMessage(&msg);
@@ -1147,6 +1224,7 @@ fn run(ready: impl FnOnce()) -> Result<(), Box<dyn Error>> {
         status_written: None,
         // `--once` (test din terminal) nu lasă fișiere de stare lângă reguli.
         status_path: if opts.once { PathBuf::new() } else { rules_dir.join(STATUS_FILE) },
+        update_path: if opts.once { PathBuf::new() } else { rules_dir.join(org_update::STATE_FILE) },
     };
     st.set_rules_info(&[]);
     // Cererile scrise cât daemonul era oprit se aplică înainte de prima scanare.
@@ -1196,6 +1274,7 @@ fn run(ready: impl FnOnce()) -> Result<(), Box<dyn Error>> {
     let mut next_periodic = Instant::now() + PERIODIC;
     let mut last_prune = Instant::now();
     let mut was_paused = paused_at_start;
+    let mut next_update_look = Instant::now() + UPDATE_FIRST_LOOK;
 
     loop {
         let paused_until = st.status.paused_until;
@@ -1352,6 +1431,12 @@ fn run(ready: impl FnOnce()) -> Result<(), Box<dyn Error>> {
             if let Some(wait) = st.handle(&p) {
                 retry.insert(p, Instant::now() + wait);
             }
+        }
+
+        // Updates, only with the user's consent: GitHub is asked once a day, in the background.
+        if Instant::now() >= next_update_look && !opts.once {
+            next_update_look = Instant::now() + UPDATE_LOOK;
+            check_updates_if_due(&rules_dir);
         }
 
         // Condițiile relative la timp: rescanare periodică.

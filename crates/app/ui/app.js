@@ -2290,6 +2290,133 @@ async function stopSimulation() {
   if (!S.dirty) toast(t('simStopped'));
 }
 
+// ---------- updates ----------
+/// What update_info returns; null until loaded.
+async function loadUpdates() {
+  try { S.upd = JSON.parse(await invoke('update_info')); } catch (_) { S.upd = null; }
+  fillUpdates();
+}
+
+/// The update boxes are redrawn in place (Home and Settings), not the whole page.
+function fillUpdates() {
+  const home = document.getElementById('home-update');
+  if (home) fill(home, updateHomeCards());
+  const set = document.getElementById('settings-update');
+  if (set) fill(set, updateSettingsBody());
+}
+
+function updateErr(e) {
+  const m = String(e).match(/^([a-z_]+)(?::\s*(.*))?$/s);
+  const code = m ? m[1] : '';
+  const known = ['network', 'no_curl', 'bad_release', 'not_newer', 'hash', 'signature', 'io'].includes(code);
+  return known ? t('updErr_' + code) + (m[2] ? ` (${m[2]})` : '') : String(e);
+}
+
+async function setUpdates(on, checkNow) {
+  try { await invoke('set_updates', { on }); } catch (e) { toast(String(e), true); return; }
+  await loadUpdates();
+  if (on && checkNow) await checkUpdates(true);
+}
+
+async function checkUpdates(quiet) {
+  S.updBusy = 'check'; fillUpdates();
+  try {
+    S.upd = JSON.parse(await invoke('check_updates'));
+    if (!quiet && !S.upd.error) toast(S.upd.available ? t('updFound', { v: S.upd.available }) : t('updUpToDate'));
+  } catch (e) { toast(updateErr(e), true); }
+  S.updBusy = null; fillUpdates();
+}
+
+/// Downloads, checks and starts the installer; it closes this window and opens it again.
+async function installUpdate() {
+  if (S.updBusy) return;
+  if (S.dirty) {
+    const c = await choiceModal(t('updUnsaved'), [['save', t('updSaveInstall'), 'primary'], ['cancel', t('cancel'), '']]);
+    if (c !== 'save') return;
+    await save();
+    if (S.dirty) return;
+  }
+  S.updBusy = 'install'; fillUpdates();
+  try {
+    const v = await invoke('install_update');
+    S.updBusy = 'started'; fillUpdates();
+    toast(t('updInstalling', { v }));
+    // The installer closes the window anyway; closing it first spares it the wait.
+    setTimeout(() => { try { TAURI.window.getCurrentWindow().destroy(); } catch (_) { /* fără fereastră Tauri */ } }, 1200);
+  } catch (e) {
+    S.updBusy = null; fillUpdates();
+    toast(updateErr(e), true);
+  }
+}
+
+/// Release notes (Markdown from the changelog) as plain elements: headings, list items,
+/// **bold** and `code`. Built as text nodes, never as HTML.
+function notesView(md) {
+  const inline = (txt) => txt.split(/(\*\*[^*]+\*\*|`[^`]+`)/).filter(Boolean).map((part) =>
+    part.startsWith('**') && part.endsWith('**') ? h('strong', {}, part.slice(2, -2))
+      : part.startsWith('`') && part.endsWith('`') ? h('code', {}, part.slice(1, -1)) : part);
+  const out = [];
+  let list = null;
+  for (const raw of md.split('\n')) {
+    const line = raw.trimEnd();
+    const item = line.match(/^\s*[-*]\s+(.*)$/);
+    if (item) { if (!list) { list = h('ul', {}); out.push(list); } list.append(h('li', {}, ...inline(item[1]))); continue; }
+    list = null;
+    const head = line.match(/^#{1,6}\s+(.*)$/);
+    if (head) out.push(h('div', { class: 'upd-h' }, ...inline(head[1])));
+    else if (line.trim()) out.push(h('p', {}, ...inline(line)));
+  }
+  return h('div', { class: 'upd-notes-body' }, out);
+}
+
+function updateButtons(u) {
+  const busy = S.updBusy;
+  return [
+    h('button', { type: 'button', class: 'btn small primary', disabled: !!busy, onclick: installUpdate },
+      busy === 'install' ? t('updDownloading') : busy === 'started' ? t('updStarted') : t('updInstall', { v: u.available })),
+    u.page ? h('button', { type: 'button', class: 'btn small', onclick: () => invoke('open_release_page', { url: u.page }).catch((e) => toast(String(e), true)) }, t('updPage')) : null,
+  ];
+}
+
+function updateHomeCards() {
+  const u = S.upd;
+  if (!u) return [];
+  if (u.enabled === null) {
+    return [h('section', { class: 'card upd-ask' },
+      h('div', { class: 'cbody' },
+        h('strong', {}, t('updAskTitle')),
+        h('p', { class: 'small' }, t('updAskBody')),
+        h('div', { class: 'row wrap' },
+          h('button', { type: 'button', class: 'btn small primary', onclick: () => setUpdates(true, true) }, t('updAskYes')),
+          h('button', { type: 'button', class: 'btn small', onclick: () => setUpdates(false) }, t('updAskNo')))))];
+  }
+  if (!u.available) return [];
+  return [h('section', { class: 'card upd-banner' },
+    h('div', { class: 'cbody' },
+      h('div', { class: 'row wrap between' },
+        h('span', {}, h('strong', {}, t('updAvailable', { v: u.available })), ' ', h('span', { class: 'muted small' }, t('updYouHave', { v: u.current }))),
+        h('span', { class: 'row' }, ...updateButtons(u))),
+      u.notes ? h('details', { class: 'upd-notes' }, h('summary', { class: 'small' }, t('updWhatsNew')), notesView(u.notes)) : null))];
+}
+
+function updateSettingsBody() {
+  const u = S.upd;
+  if (!u) return [h('p', { class: 'muted' }, '—')];
+  const when = u.checked_at ? relTime(u.checked_at) : null;
+  const line = S.updBusy === 'check' ? t('updChecking')
+    : !when ? t('updNever')
+      : u.error ? t('updLastFailed', { when, why: updateErr(u.error) })
+        : u.available ? t('updLastFound', { when, v: u.available }) : t('updLastOk', { when });
+  return [
+    check(t('updDaily'), u.enabled === 'on', (on) => setUpdates(on, on && !u.checked_at)),
+    h('div', { class: 'kv' }, h('span', { class: 'muted' }, t('version')), h('span', {}, u.current)),
+    h('p', { class: 'small' + (u.error && S.updBusy !== 'check' ? ' warn' : '') }, line),
+    h('div', { class: 'row wrap' },
+      h('button', { type: 'button', class: 'btn small', disabled: !!S.updBusy, onclick: () => checkUpdates(false) }, t('updCheckNow')),
+      ...(u.available ? updateButtons(u) : [])),
+    h('p', { class: 'hint' }, t('updHelp'))];
+}
+
 function simBanner() {
   const sims = S.doc.rules.filter((r) => r.simulate && r.enabled);
   if (!sims.length) return null;
@@ -2340,6 +2467,7 @@ const looksNew = () => S.doc.rules.length === 0 && !(S.gate.password && !S.gate.
 function renderHomeTab() {
   return h('div', { class: 'page home-page' },
     h('div', { id: 'home-status' }),
+    h('div', { id: 'home-update', class: 'col' }, updateHomeCards()),
     simBanner(),
     looksNew() ? welcomeCard() : null,
     h('div', { id: 'home-checks' }),
@@ -3393,6 +3521,7 @@ function renderSettingsTab() {
       h('button', { type: 'button', class: 'btn', onclick: importRules }, t('importRules')),
       h('button', { type: 'button', class: 'btn', onclick: exportRules }, t('exportRules'))),
     h('p', { class: 'hint' }, t('importExportHelp')));
+  const updates = card(t('updTitle'), null, h('div', { id: 'settings-update', class: 'col' }, updateSettingsBody()));
   const about = card(t('about'), null,
     h('div', { class: 'kv' }, h('span', { class: 'muted' }, t('dataFolder')),
       h('span', { class: 'row' }, h('span', { class: 'mono ell', title: st ? st.data_dir : '' }, st ? st.data_dir : '—'),
@@ -3403,7 +3532,7 @@ function renderSettingsTab() {
     h('p', { class: 'hint' }, t('ruleBackupsHelp')),
     h('div', { class: 'kv' }, h('span', { class: 'muted' }, t('version')), h('span', {}, st ? st.version : '—')));
   return h('div', { class: 'page settings-page' }, h('h2', {}, t('settings')),
-    h('div', { class: 'settings-grid' }, h('div', { class: 'col' }, general, io, about), h('div', { class: 'col' }, daemon, timing, hiddenCard)));
+    h('div', { class: 'settings-grid' }, h('div', { class: 'col' }, general, updates, io, about), h('div', { class: 'col' }, daemon, timing, hiddenCard)));
 }
 
 async function setAutostart(on) {
@@ -3634,6 +3763,7 @@ async function init() {
   await refreshGate();
   try { await reloadDoc(); } catch (e) { toast(t('loadError', { msg: e }), true); }
   try { S.autostart = await invoke('get_autostart'); } catch (_) { /* implicit: oprit */ }
+  await loadUpdates();
   await refreshStatus();
   // Daemonul e scopul aplicației: dacă nu rulează, pornește-l (apare pictograma din tray).
   if (S.status && !S.status.daemon_running) {
@@ -3647,6 +3777,8 @@ async function init() {
     try { TAURI.window.getCurrentWindow().show().catch(() => {}); } catch (_) { /* fără fereastră Tauri */ }
   }));
   setInterval(refreshStatus, 10000);
+  // What the daemon's daily check found (update.json).
+  setInterval(() => { if (!document.hidden && !S.updBusy) loadUpdates(); }, 60000);
   setInterval(() => {
     if (document.hidden) return;
     if (S.tab === 'journal') { loadJournal(); loadPending(); }

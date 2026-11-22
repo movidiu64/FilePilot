@@ -1524,6 +1524,73 @@ fn set_language(lang: String, files: State<'_, DataFiles>) -> Result<(), String>
     write_settings(&files, "lang", Some(s(&lang)))
 }
 
+// ---------- updates (crates/update) ----------
+
+/// What the window shows about updates: the user's choice (`"on"`, `"off"` or null when not
+/// asked yet), this version and what the last check found.
+fn update_json(files: &DataFiles) -> String {
+    let st = org_update::read_state(&files.dir.join(org_update::STATE_FILE));
+    let choice = match read_settings(files).into_iter().find(|(k, _)| k == "updates") {
+        Some((_, Value::Str(v))) if v == "on" || v == "off" => s(&v),
+        _ => Value::Null,
+    };
+    let latest = st.latest;
+    json::to_string_pretty(&obj(vec![
+        ("enabled", choice),
+        ("current", s(&org_update::Version::current().to_string())),
+        ("checked_at", if st.checked_at > 0 { int(st.checked_at) } else { Value::Null }),
+        ("latest", latest.map_or(Value::Null, |v| s(&v.to_string()))),
+        ("available", st.available().map_or(Value::Null, |v| s(&v.to_string()))),
+        ("notes", if st.available().is_some() { s(&st.notes) } else { Value::Null }),
+        ("page", latest.map_or(Value::Null, |v| s(&org_update::page_url(v)))),
+        ("error", st.error.as_deref().map_or(Value::Null, s)),
+    ]))
+}
+
+#[tauri::command]
+fn update_info(files: State<'_, DataFiles>) -> String {
+    update_json(&files)
+}
+
+/// Whether the daemon asks GitHub once a day (the answer to the question on first start).
+#[tauri::command]
+fn set_updates(on: bool, files: State<'_, DataFiles>) -> Result<(), String> {
+    write_settings(&files, "updates", Some(s(if on { "on" } else { "off" })))
+}
+
+/// "Check now": asks GitHub and records the answer for the daemon and the tray as well.
+#[tauri::command]
+async fn check_updates(files: State<'_, DataFiles>) -> Result<String, String> {
+    org_update::check_and_record(&files.dir.join(org_update::STATE_FILE), now_ts());
+    Ok(update_json(&files))
+}
+
+/// Downloads the latest installer, checks its SHA-256 and FilePilot's signature, and starts
+/// it (progress only; it closes this window, updates and opens it again). Errors are
+/// `code: detail` (see org_update::Error).
+#[tauri::command]
+async fn install_update(files: State<'_, DataFiles>) -> Result<String, String> {
+    let r = org_update::check().map_err(|e| e.to_string())?;
+    let dir = std::env::temp_dir().join("FilePilot-update");
+    let setup = org_update::download(&r, &dir).map_err(|e| e.to_string())?;
+    // The release just installed is the latest: the window and tray stop offering it.
+    let _ = org_update::write_state(
+        &files.dir.join(org_update::STATE_FILE),
+        &org_update::State { checked_at: now_ts(), latest: Some(r.version), notes: r.notes.clone(), error: None },
+    );
+    org_update::run_installer(&setup).map_err(|e| e.to_string())?;
+    Ok(r.version.to_string())
+}
+
+/// Opens a release page in the browser (only this repository's).
+#[tauri::command]
+fn open_release_page(url: String) -> Result<(), String> {
+    if !url.starts_with("https://github.com/movidiu64/FilePilot/") || url.contains(['"', ' ', '\'']) {
+        return Err("not a FilePilot page".into());
+    }
+    std::process::Command::new("explorer.exe").arg(&url).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// Pornește daemonul (`filepilot.exe`, lângă executabilul ferestrei), fără fereastră de consolă.
 #[tauri::command]
 fn start_daemon(files: State<'_, DataFiles>) -> Result<(), String> {
@@ -1585,6 +1652,11 @@ fn main() {
             search_progress,
             stop_search,
             forget_search,
+            update_info,
+            set_updates,
+            check_updates,
+            install_update,
+            open_release_page,
             open_file,
             get_rules,
             save_rules,

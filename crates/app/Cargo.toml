@@ -26,6 +26,7 @@ org-store = { path = "../store" }
 org-sysfs = { path = "../sysfs" }
 org-paths = { path = "../paths" }
 org-actions = { path = "../actions" }
+org-update = { path = "../update" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [features]

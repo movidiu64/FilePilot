@@ -17,6 +17,7 @@ FilePilot watches folders and applies *if–then* rules to the files that appear
 - [Safety](#safety)
 - [Hidden rules](#hidden-rules)
 - [Settings](#settings)
+- [Updates](#updates)
 - [Data files](#data-files)
 - [Command line](#command-line)
 - [Installer](#installer)
@@ -246,9 +247,23 @@ Tick **Hidden** in the editor to keep a rule out of exports. With a password (Se
 - **Process a new file**: the settle interval described above.
 - **Keep the journal**: how long operations are kept.
 - **Hidden rules**: the password.
+- **Updates**: whether GitHub is checked daily for a new version (see below).
 - **Import / export** rules, the data folder and the version.
 
 Rules are backed up when saved, at most once every 10 minutes; the last 30 backups are kept in `backups\`.
+
+## Updates
+
+On first start the Home page asks whether FilePilot may check for updates; the answer can be changed in **Settings → Updates**. When it may, the daemon asks GitHub once a day (three hours after a failed attempt) for the latest release of FilePilot. The request is `GET https://api.github.com/repos/movidiu64/FilePilot/releases/latest`, made with Windows' own `curl.exe`; it carries nothing but FilePilot's version in the User-Agent header. **Check now** asks right away, whether daily checks are on or not.
+
+A newer version shows up on the Home page, with its release notes, and at the top of the tray icon's menu. Nothing is downloaded or installed until you click **Install**. Then FilePilot:
+
+1. asks GitHub again for the latest release and takes its installer and signature only from this repository's release URLs, over HTTPS;
+2. downloads both to `%TEMP%\FilePilot-update`;
+3. checks that the installer has the size and SHA-256 GitHub lists for it, and that it carries a signature made with FilePilot's release key ([minisign](https://jedisct1.github.io/minisign/) format, Ed25519) whose signed comment names this very file and version, so an older signed installer cannot pass for a newer one;
+4. only then starts it with `/P /R /UPDATE`: a progress window and no questions. It closes the window (unsaved rules are saved first, if you agree), stops and restarts the daemon, installs and opens the window again. Rules, journal and settings stay.
+
+A file that fails a check is deleted and not started; the Home page or Settings says why. Downgrades are refused. The release key's public half is in `crates/update/src/lib.rs`; the release build signs with its secret half (see [Releasing](#releasing)).
 
 ## Data files
 
@@ -259,6 +274,7 @@ All in `%APPDATA%\FilePilot` (override with the `FILEPILOT_DATA` environment var
 | `rules.orgrules` | the rules (JSON); the window writes it atomically and the daemon reloads it by itself |
 | `organizator.db` | SQLite in WAL mode: journal, processed-file state, pending confirmations, fingerprint catalog and content results (the name dates from before the rename) |
 | `settings.json` | preferences shared by the window and the daemon |
+| `update.json` | what the last check for updates found |
 | `daemon-status.json` | daemon status for the window and the tray: rules, unavailable folders, pause, today's counts, last error, scan progress |
 | `daemon.lock` | ensures a single daemon |
 | `pause` | the Unix time until which nothing is processed; `0` means until resumed; absent means active |
@@ -285,7 +301,7 @@ filepilot undo <file.db> --run <run>       restore a whole run
 - On install and update the daemon is stopped before files are copied and restarted afterwards if it was running. An open window is closed only after it asks about unsaved changes.
 - An autostart entry that pointed to another copy (for example a portable one) now points to the installed daemon.
 - Uninstalling stops the daemon and removes autostart. Your data in `%APPDATA%\FilePilot` stays unless you tick *Also delete the data*.
-- Silent install: `setup.exe /S`; silent uninstall: `uninstall.exe /S`.
+- Silent install: `setup.exe /S`; silent uninstall: `uninstall.exe /S`. The built-in updater runs `setup.exe /P /R /UPDATE` (progress only, window opened again at the end).
 - Upgrading from *Organizator* (the name before 1.0): the old install is removed, autostart is carried over and the data folder moves from `%APPDATA%\Organizator` to `%APPDATA%\FilePilot` on first start. Rule files exported by Organizator import as they are.
 - The executables are not code-signed, so SmartScreen may ask for *More info → Run anyway* the first time.
 
@@ -305,6 +321,7 @@ Configuration: `crates/app/tauri.bundle.json` (merged over `tauri.conf.json` onl
 | `org-paths` | data folder, instance lock | — |
 | `org-store` | SQLite storage (schema 5, migrated automatically) | rusqlite |
 | `org-sysfs` | the real Recycle Bin | trash |
+| `org-update` | updates from GitHub releases: the latest version, download, SHA-256 and signature checks | minisign-verify |
 | `org-daemon` | `filepilot.exe`: background process, tray icon | notify, chrono, tray-icon, windows-sys |
 | `org-app` | `filepilot-ui.exe`: the window (plain HTML/CSS/JS in `crates/app/ui`) | tauri 2 and plugins |
 
@@ -318,4 +335,4 @@ Versions follow [Semantic Versioning](https://semver.org/).
 2. Add a `## [x.y.z] - YYYY-MM-DD` section at the top of `CHANGELOG.md`.
 3. Commit and push to `main`.
 
-The Windows workflow checks that both version numbers match, runs the tests, builds the installer and tests it. If everything passes and `vx.y.z` has no release yet, it creates the tag and publishes a release named *FilePilot x.y.z* with the installer, a portable ZIP and the changelog section as release notes. Pushes to other branches, and to `main` without a new version, only build and test; their installer and portable ZIP are kept as workflow artifacts for 2 days. Larger features are developed on a branch (`feature/…`) and merged into `main` once tested. Pushing a `vx.y.z` tag by hand works too, as long as it matches the version.
+The Windows workflow checks that both version numbers match, runs the tests, builds the installer and tests it (including an update the way the app starts it), then signs it for the updater with `tools/sign-release.py` and the `FILEPILOT_SIGNING_KEY` secret, and checks the signature with the app's own code. A release is not published without the signature. If everything passes and `vx.y.z` has no release yet, it creates the tag and publishes a release named *FilePilot x.y.z* with the installer, a portable ZIP and the changelog section as release notes. Pushes to other branches, and to `main` without a new version, only build and test; their installer and portable ZIP are kept as workflow artifacts for 2 days. Larger features are developed on a branch (`feature/…`) and merged into `main` once tested. Pushing a `vx.y.z` tag by hand works too, as long as it matches the version.

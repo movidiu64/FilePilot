@@ -3,6 +3,12 @@
 All notable changes to FilePilot are listed here. Versions follow [Semantic Versioning](https://semver.org/):
 a new major version may need you to review your rules, minor versions add features, patches fix bugs.
 
+## [Unreleased]
+
+### Added
+- **Updates**: with your consent (asked once, on the Home page; changeable in Settings), the daemon asks GitHub once a day for the latest release. A new version shows up on the Home page with its release notes and in the tray menu; **Install** downloads it, checks its size and SHA-256 against GitHub and its signature against FilePilot's release key, then installs it with a progress window and opens FilePilot again.
+- Release installers are signed (`.minisig`, minisign format); the public key is in `SECURITY.md`.
+
 ## [1.3.0] - 2026-11-22
 
 ### Added

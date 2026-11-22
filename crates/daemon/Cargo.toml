@@ -18,6 +18,7 @@ org-journal = { path = "../journal" }
 org-engine = { path = "../engine" }
 org-portable = { path = "../portable" }
 org-store = { path = "../store" }
+org-update = { path = "../update" }
 notify = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 

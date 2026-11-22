@@ -1,0 +1,12 @@
+[package]
+name = "org-update"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+org-core = { path = "../core" }
+org-portable = { path = "../portable" }
+# Ed25519 (minisign) signature check, no dependencies of its own. MIT.
+minisign-verify = "0.3"

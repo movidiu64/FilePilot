@@ -31,6 +31,7 @@ Pick the folders to watch, say which files you mean (*if*) and what should happe
 - 🛡️ **Safe by design**: files still downloading or open in another program are left alone; found files are never opened with other programs or executed; Windows-reserved names are fixed before a move.
 - 🔍 **Search**: find any file in your watched folders by name, extension, size or date, instantly after the first listing.
 - 🏠 **Home page**: status, things that need attention, pending confirmations, recent actions and a 7-day chart. Pause from the tray icon for an hour or until you resume; its **Recent files** menu takes you to the last files moved.
+- ⬆️ **Updates**: if you agree, FilePilot checks GitHub once a day and installs a new version with one click, only after checking its SHA-256 and its signature.
 - 🪶 **Light**: written in Rust; with nothing to do it uses no CPU, and file content is read only when a rule needs it, once per file version.
 - 🌐 English and Romanian interface, light and dark theme, rule templates and a first-run guide.
 
