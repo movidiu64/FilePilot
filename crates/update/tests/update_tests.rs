@@ -88,6 +88,19 @@ fn refuses_releases_that_are_not_ours() {
 }
 
 #[test]
+fn a_check_needs_the_signed_installer_only_for_a_newer_version() {
+    // This build's version (or an older one): up to date, whatever files the release has.
+    let cur = Version::current().to_string();
+    assert_eq!(parse_check(&latest(&format!("v{cur}"), "")), Ok((Version::current(), String::new())));
+    assert_eq!(parse_check(&latest("v0.1.0", "")).map(|x| x.0), Ok(v("0.1.0")));
+    // Newer: offered with its notes only if the release is complete.
+    assert_eq!(parse_check(&latest("v9.0.0", &good_assets())).map(|x| x.0), Ok(v("9.0.0")));
+    assert!(parse_check(&latest("v9.0.0", &good_assets())).unwrap().1.contains("Recent files"));
+    assert!(matches!(parse_check(&latest("v9.0.0", "")), Err(Error::BadRelease(_))));
+    assert!(matches!(parse_check("{}"), Err(Error::BadRelease(_))));
+}
+
+#[test]
 fn the_signature_is_checked_with_the_key_file_and_version() {
     assert_eq!(verify_signature(DATA, SIG, NAME, v("9.0.0"), TEST_KEY), Ok(()));
     let mut changed = DATA.to_vec();

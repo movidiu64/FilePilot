@@ -173,6 +173,18 @@ fn get_str<'a>(o: &'a [(String, Value)], key: &str) -> Option<&'a str> {
     }
 }
 
+/// What a check found: the latest version and its notes. A release that is not newer than
+/// this build needs nothing more; a newer one must have its signed installer (see
+/// [`parse_latest`]), or it is not offered.
+pub fn parse_check(text: &str) -> Result<(Version, String), Error> {
+    let Ok(Value::Obj(o)) = json::parse(text) else { return Err(Error::BadRelease("not a release".into())) };
+    let v = get_str(&o, "tag_name").and_then(Version::parse).ok_or_else(|| Error::BadRelease("the tag is not a version".into()))?;
+    if v <= Version::current() {
+        return Ok((v, String::new()));
+    }
+    parse_latest(text).map(|r| (r.version, r.notes))
+}
+
 /// Reads GitHub's answer for the latest release (`GET /repos/{repo}/releases/latest`).
 pub fn parse_latest(text: &str) -> Result<Release, Error> {
     let bad = |s: &str| Error::BadRelease(s.to_string());
@@ -310,8 +322,9 @@ pub fn check() -> Result<Release, Error> {
 /// Asks GitHub and writes down what it found in `path` (also when it failed).
 pub fn check_and_record(path: &Path, now: i64) -> State {
     let old = read_state(path);
-    let st = match check() {
-        Ok(r) => State { checked_at: now, latest: Some(r.version), notes: r.notes, error: None },
+    let found = fetch(LATEST_URL, None, 30).and_then(|body| parse_check(&String::from_utf8_lossy(&body)));
+    let st = match found {
+        Ok((latest, notes)) => State { checked_at: now, latest: Some(latest), notes, error: None },
         // A failed check keeps what the previous one found.
         Err(e) => State { checked_at: now, error: Some(e.code().to_string()), ..old },
     };
